@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>东启勘流 · 并表与复核（效果稿）</title>
+<style>
+:root{
+  --bg:#F3F4F6; --surface:#FFFFFF; --border:#E5E7EB; --border-strong:#D1D5DB;
+  --primary:#1D4ED8; --primary-deep:#1E3A8A; --primary-soft:#EFF6FF;
+  --amber-text:#92400E; --amber-bg:#FEF3C7; --amber-border:#F59E0B;
+  --red-text:#B91C1C; --red-bg:#FEE2E2;
+  --gray-text:#6B7280; --gray-bg:#F3F4F6;
+  --green:#047857; --text:#1F2937; --text-2:#4B5563;
+  --mono:Consolas,'Cascadia Mono','SF Mono',monospace;
+  --sans:'Microsoft YaHei UI','Microsoft YaHei','Segoe UI',system-ui,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{font-family:var(--sans);font-size:13px;color:var(--text);background:var(--bg);overflow:hidden}
+
+.app{display:flex;flex-direction:column;height:100vh}
+
+/* ===== 顶栏 ===== */
+.topbar{display:flex;align-items:center;justify-content:space-between;background:var(--surface);
+  border-bottom:1px solid var(--border);padding:0 16px;height:52px;flex:0 0 52px}
+.topbar .case{display:flex;align-items:center;gap:10px}
+.topbar .case .logo{width:28px;height:28px;border-radius:6px;background:var(--primary-deep);color:#fff;
+  display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700}
+.topbar .case .name{font-size:14px;font-weight:600}
+.topbar .case .no{font-size:12px;color:var(--gray-text);background:var(--gray-bg);padding:2px 8px;border-radius:4px}
+.topbar .actions{display:flex;gap:8px}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:6px;
+  border:1px solid var(--border-strong);background:var(--surface);color:var(--text-2);
+  font-size:13px;cursor:pointer;font-family:var(--sans)}
+.btn:hover{border-color:var(--primary);color:var(--primary)}
+.btn.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+.btn.primary:hover{background:var(--primary-deep)}
+
+/* ===== 主体三栏 ===== */
+.main{display:flex;flex:1;min-height:0}
+
+/* 左栏 */
+.sidebar{width:216px;flex:0 0 216px;background:var(--surface);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;padding:12px 8px}
+.sidebar .ws{font-size:11px;color:var(--gray-text);letter-spacing:.05em;padding:4px 10px 8px}
+.nav{display:flex;flex-direction:column;gap:2px}
+.nav a{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;
+  color:var(--text-2);text-decoration:none;cursor:pointer;font-size:13px}
+.nav a:hover{background:var(--gray-bg)}
+.nav a.active{background:var(--primary-soft);color:var(--primary);font-weight:600}
+.nav a .dot{width:6px;height:6px;border-radius:50%;background:transparent}
+.nav a .count{margin-left:auto;font-size:11px;color:var(--gray-text)}
+.nav a .count.warn{color:var(--amber-text);background:var(--amber-bg);padding:0 6px;border-radius:8px}
+.sidebar .meta{margin-top:auto;border-top:1px solid var(--border);padding:10px 10px 2px;
+  font-size:11px;color:var(--gray-text);line-height:1.8}
+
+/* 中栏 */
+.center{flex:1;min-width:0;display:flex;flex-direction:column;padding:12px 12px 0 12px;gap:10px}
+.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.search{display:flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--border);
+  border-radius:6px;padding:5px 10px;width:240px}
+.search input{border:none;outline:none;font-size:13px;font-family:var(--sans);width:100%;background:transparent}
+select{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:5px 8px;
+  font-size:13px;font-family:var(--sans);color:var(--text-2);cursor:pointer}
+.switch{display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--border);
+  border-radius:6px;padding:5px 10px;cursor:pointer;font-size:13px;color:var(--text-2);user-select:none}
+.switch.on{background:var(--amber-bg);border-color:var(--amber-border);color:var(--amber-text)}
+.toolbar .count{margin-left:auto;font-size:12px;color:var(--gray-text)}
+
+/* 流水表 */
+.tablewrap{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.tablewrap table{width:100%;border-collapse:collapse}
+.tablewrap thead th{position:sticky;top:0;background:#FAFBFC;border-bottom:1px solid var(--border);
+  font-size:12px;font-weight:600;color:var(--text-2);text-align:left;padding:8px 10px;z-index:1}
+.tablewrap thead th.num{text-align:right}
+.tablewrap tbody td{padding:5px 10px;border-bottom:1px solid #F3F4F6;font-size:13px;white-space:nowrap}
+.tablewrap tbody tr{cursor:pointer}
+.tablewrap tbody tr:hover{background:#F9FAFB}
+.tablewrap tbody tr.sel{background:var(--primary-soft);box-shadow:inset 3px 0 0 var(--primary)}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right}
+td.mono{padding-right:12px}
+.amt-pos{color:var(--green)}
+.amt-neg{color:var(--red-text)}
+.dir{display:inline-block;font-size:12px;padding:1px 8px;border-radius:10px;min-width:34px;text-align:center}
+.dir.in{background:#ECFDF5;color:var(--green)}
+.dir.out{background:#FEF2F2;color:var(--red-text)}
+.tag{display:inline-flex;align-items:center;gap:4px;font-size:12px;padding:1px 8px;border-radius:4px;white-space:nowrap}
+.tag.ok{background:#ECFDF5;color:var(--green)}
+.tag.pending{background:var(--amber-bg);color:var(--amber-text)}
+.tag.balerr{background:var(--red-bg);color:var(--red-text)}
+.tag.nocheck{background:var(--gray-bg);color:var(--gray-text)}
+.tag .mark{font-size:10px}
+.empty{padding:24px;text-align:center;color:var(--gray-text)}
+
+/* 右栏 */
+.inspect{width:300px;flex:0 0 300px;background:var(--surface);border-left:1px solid var(--border);
+  display:flex;flex-direction:column;min-height:0;transition:margin .15s}
+.inspect.hidden{display:none}
+.inspect .head{padding:12px 14px 8px;border-bottom:1px solid var(--border)}
+.inspect .head h3{font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
+.inspect .body{padding:12px 14px;overflow-y:auto;flex:1}
+.kv{display:flex;justify-content:space-between;align-items:baseline;padding:6px 0;border-bottom:1px dashed #EEF0F3;font-size:12.5px}
+.kv .k{color:var(--gray-text)}
+.kv .v{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.kv.compare{background:#F9FAFB;border:1px solid var(--border);border-radius:6px;padding:8px;margin:8px 0;border-bottom-style:solid}
+.kv.compare .row{display:flex;justify-content:space-between;align-items:baseline;padding:3px 0}
+.kv.compare .arrow{color:var(--gray-text);text-align:center;font-size:11px;padding:2px 0}
+.kv.compare .diff{color:var(--red-text)}
+.src{background:var(--primary-soft);border:1px solid #DBEAFE;border-radius:6px;padding:8px;margin-top:10px;font-size:12px}
+.src .f{color:var(--text-2);word-break:break-all}
+.src .loc{font-family:var(--mono);font-size:12px;margin-top:4px}
+.src .btn-open{margin-top:8px}
+.inspect .foot{padding:10px 14px;border-top:1px solid var(--border);font-size:12px;color:var(--gray-text)}
+
+/* ===== 首页 ===== */
+.home{flex:1;display:flex;flex-direction:column;min-height:0;padding:22px 28px;overflow-y:auto;gap:18px}
+.hero{background:linear-gradient(112deg,#1E3A8A 0%,#1D4ED8 68%,#2563EB 100%);border-radius:14px;
+  padding:24px 28px;color:#fff;display:flex;align-items:center;justify-content:space-between;
+  box-shadow:0 6px 20px rgba(30,58,138,.18);position:relative;overflow:hidden}
+.hero::after{content:'';position:absolute;right:-60px;top:-80px;width:240px;height:240px;border-radius:50%;
+  background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12)}
+.hero h1{font-size:21px;font-weight:700;letter-spacing:.01em;margin-bottom:6px}
+.hero p{font-size:12.5px;color:rgba(255,255,255,.75)}
+.hero .hstats{display:flex;gap:0;position:relative;z-index:1}
+.hero .hstat{padding:0 22px;border-left:1px solid rgba(255,255,255,.18)}
+.hero .hstat:first-child{border-left:none}
+.hero .hstat b{display:block;font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:22px;font-weight:700}
+.hero .hstat span{font-size:11.5px;color:rgba(255,255,255,.7)}
+.hero .hstat b.amber{color:#FCD34D}
+.sect-title{display:flex;align-items:center;gap:10px;font-size:14px;font-weight:700;color:var(--text)}
+.sect-title .line{flex:1;height:1px;background:var(--border)}
+.sect-title .newcase{margin-left:auto}
+.case-list{display:flex;flex-direction:column;gap:12px}
+.case-card{position:relative;display:flex;align-items:center;gap:20px;background:var(--surface);
+  border:1px solid var(--border);border-radius:12px;padding:18px 22px;cursor:pointer;
+  transition:transform .14s ease, box-shadow .14s ease, border-color .14s ease;overflow:hidden}
+.case-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--primary)}
+.case-card.amber::before{background:var(--amber-border)}
+.case-card:hover{transform:translateY(-2px);border-color:#93C5FD;box-shadow:0 10px 24px rgba(30,58,138,.12)}
+.case-card .cc-badge{width:44px;height:44px;flex:0 0 44px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+  font-size:18px;font-weight:700;color:#fff;background:linear-gradient(135deg,#1E3A8A,#2563EB)}
+.case-card.amber .cc-badge{background:linear-gradient(135deg,#92400E,#D97706)}
+.case-card .cc-main{flex:1;min-width:0}
+.case-card .cc-row1{display:flex;align-items:center;gap:10px;margin-bottom:5px}
+.case-card .cc-name{font-size:16px;font-weight:700}
+.case-card .cc-no{font-size:11.5px;color:var(--gray-text);background:var(--gray-bg);padding:2px 8px;border-radius:4px}
+.case-card .cc-pill{font-size:11px;padding:2px 8px;border-radius:10px;background:#ECFDF5;color:var(--green)}
+.case-card .cc-pill.amber{background:var(--amber-bg);color:var(--amber-text)}
+.case-card .cc-row2{font-size:12px;color:var(--gray-text);margin-bottom:10px}
+.case-card .cc-metrics{display:flex;gap:0}
+.case-card .cc-metric{padding:0 14px;border-left:1px solid var(--border);display:flex;flex-direction:column;gap:2px}
+.case-card .cc-metric:first-child{padding-left:0;border-left:none}
+.case-card .cc-metric b{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:15px;color:var(--text)}
+.case-card .cc-metric b.amber{color:var(--amber-text)}
+.case-card .cc-metric b.red{color:var(--red-text)}
+.case-card .cc-metric span{font-size:11px;color:var(--gray-text)}
+.case-card .cc-right{display:flex;align-items:center;gap:10px;flex:0 0 auto}
+.case-card .cc-updated{font-size:11.5px;color:var(--gray-text);text-align:right}
+.case-card .cc-updated b{display:block;font-family:var(--mono);font-size:12px;color:var(--text-2);margin-bottom:2px}
+.cc-enter{display:inline-flex;align-items:center;gap:6px;background:var(--primary-soft);color:var(--primary);
+  font-weight:600;font-size:13px;padding:8px 14px;border-radius:8px;transition:background .12s}
+.case-card:hover .cc-enter{background:var(--primary);color:#fff}
+.case-card.newcard{border-style:dashed;justify-content:center;min-height:72px;color:var(--gray-text);gap:10px}
+.case-card.newcard::before{display:none}
+.case-card.newcard:hover{transform:none;border-color:var(--primary);color:var(--primary);box-shadow:none}
+
+/* 底栏 */
+.statusbar{display:flex;align-items:center;gap:16px;background:var(--surface);border-top:1px solid var(--border);
+  padding:0 16px;height:34px;flex:0 0 34px;font-size:12px;color:var(--text-2)}
+.statusbar .sel{font-family:var(--mono)}
+.statusbar .sep{color:var(--border-strong)}
+.statusbar .warn{color:var(--amber-text);cursor:pointer;font-weight:600}
+.statusbar .warn:hover{text-decoration:underline}
+.statusbar .progress{margin-left:auto;display:flex;align-items:center;gap:8px}
+.bar{width:120px;height:6px;background:var(--gray-bg);border-radius:3px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--primary);border-radius:3px}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ================= 首页：案件列表 ================= -->
+  <section class="home" id="homeView">
+    <div class="hero">
+      <div>
+        <h1>资金流水分析工作台</h1>
+        <p>东启勘流 · 司法审计专用 · 数据与原件全部存于本机</p>
+      </div>
+      <div class="hstats">
+        <div class="hstat"><b>2</b><span>在办案件</span></div>
+        <div class="hstat"><b class="amber">1,207</b><span>待核流水</span></div>
+        <div class="hstat"><b>39</b><span>余额异常</span></div>
+        <div class="hstat"><b>4,557</b><span>源文件</span></div>
+      </div>
+    </div>
+
+    <div class="sect-title">在办案件<span class="line"></span>
+      <span class="newcase"><button class="btn primary" onclick="alert('效果稿：新建案件向导在后续版本接入')">＋ 新建案件</button></span>
+    </div>
+
+    <div class="case-list">
+      <div class="case-card" onclick="enterCase(0)">
+        <div class="cc-badge">谭</div>
+        <div class="cc-main">
+          <div class="cc-row1">
+            <span class="cc-name">谭磊被诈骗案</span>
+            <span class="cc-no">TL-2026-011</span>
+            <span class="cc-pill">分析中</span>
+          </div>
+          <div class="cc-row2">司法会计鉴定 · 银行 / 微信 / 支付宝三渠道</div>
+          <div class="cc-metrics">
+            <div class="cc-metric"><b>42</b><span>源文件</span></div>
+            <div class="cc-metric"><b>1,234</b><span>已并表行</span></div>
+            <div class="cc-metric"><b class="amber">3</b><span>待核</span></div>
+            <div class="cc-metric"><b class="red">2</b><span>余额异常</span></div>
+          </div>
+        </div>
+        <div class="cc-right">
+          <div class="cc-updated"><b>v3 · 2026-11-12 18:20</b>最近更新</div>
+          <span class="cc-enter">进入工作台 →</span>
+        </div>
+      </div>
+
+      <div class="case-card amber" onclick="enterCase(1)">
+        <div class="cc-badge">艾</div>
+        <div class="cc-main">
+          <div class="cc-row1">
+            <span class="cc-name">艾仕达合同诈骗案</span>
+            <span class="cc-no">ASD-2026-003</span>
+            <span class="cc-pill amber">待核 1,204</span>
+          </div>
+          <div class="cc-row2">司法会计鉴定 · 大宗流水 · 多层资金追踪</div>
+          <div class="cc-metrics">
+            <div class="cc-metric"><b>4,515</b><span>源文件</span></div>
+            <div class="cc-metric"><b>76,069</b><span>已并表行</span></div>
+            <div class="cc-metric"><b class="amber">1,204</b><span>待核</span></div>
+            <div class="cc-metric"><b class="red">37</b><span>余额异常</span></div>
+          </div>
+        </div>
+        <div class="cc-right">
+          <div class="cc-updated"><b>v12 · 2026-11-12 10:05</b>最近更新</div>
+          <span class="cc-enter">进入工作台 →</span>
+        </div>
+      </div>
+
+      <div class="case-card newcard" onclick="alert('效果稿：新建案件向导在后续版本接入')">
+        <span style="font-size:18px">＋</span><span>新建案件</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 工作台（进入案件后显示） ================= -->
+  <header class="topbar" id="workTop" style="display:none">
+    <div class="case">
+      <div class="logo">勘</div>
+      <span class="name" id="caseName">谭磊被诈骗案 · 资金流水并表</span>
+      <span class="no" id="caseNo">案件号 TL-2026-011</span>
+    </div>
+    <div class="actions">
+      <button class="btn primary">＋ 导入文件</button>
+      <button class="btn">导出结果</button>
+    </div>
+  </header>
+
+  <div class="main" id="workMain" style="display:none">
+
+    <!-- 左栏 -->
+    <aside class="sidebar">
+      <div class="ws">审计工作台</div>
+      <nav class="nav">
+        <a style="color:var(--gray-text)" onclick="backHome()">← 案件列表</a>
+        <div style="height:1px;background:var(--border);margin:6px 8px"></div>
+        <a><span class="dot"></span>案件材料<span class="count">4</span></a>
+        <a class="active"><span class="dot"></span>并表流水<span class="count">1,234</span></a>
+        <a><span class="dot"></span>异常复核<span class="count warn">6</span></a>
+        <a><span class="dot"></span>导出结果<span class="count">2</span></a>
+      </nav>
+      <div class="meta">
+        数据版本：v3（2026-11-12 18:20）<br>
+        已导入：建行 / 微信 / 支付宝<br>
+        口径：收进为正 · 付出为负
+      </div>
+    </aside>
+
+    <!-- 中栏 -->
+    <section class="center">
+      <div class="toolbar">
+        <div class="search">🔍<input id="q" placeholder="搜索账户 / 对方 / 摘要" aria-label="搜索"></div>
+        <select id="state" aria-label="状态筛选">
+          <option value="all">全部状态</option>
+          <option value="pending">待核</option>
+          <option value="balerr">余额异常</option>
+          <option value="nocheck">未校验</option>
+          <option value="ok">已确认</option>
+        </select>
+        <div class="switch" id="onlyPending" role="switch" aria-checked="false" tabindex="0">仅看待核</div>
+        <span class="count" id="rowcount">共 18 条</span>
+      </div>
+
+      <div class="tablewrap">
+        <table id="tbl">
+          <thead>
+            <tr>
+              <th style="width:86px">状态</th>
+              <th style="width:44px" class="num">#</th>
+              <th style="width:128px">交易时间</th>
+              <th style="width:46px">收支</th>
+              <th class="num" style="width:110px">金额（元）</th>
+              <th class="num" style="width:120px">余额（元）</th>
+              <th>对方账户</th>
+              <th>摘要</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 右栏：原始记录核对 -->
+    <aside class="inspect" id="inspect">
+      <div class="head"><h3 id="insTitle">原始记录核对</h3></div>
+      <div class="body" id="insBody"></div>
+      <div class="foot">双击行 = 标记待核 · ↑↓ 移动选中</div>
+    </aside>
+
+  </div>
+
+  <!-- 底栏 -->
+  <footer class="statusbar" id="workStatus" style="display:none">
+    <span>当前选中：<span class="sel" id="sbSel">#1</span></span>
+    <span class="sep">|</span>
+    <span>待核 <span class="warn" id="sbPending" title="点击查看全部待核">3</span> 条</span>
+    <span class="sep">|</span>
+    <span>余额异常 2 条</span>
+    <span class="sep">|</span>
+    <span>未校验 1 条</span>
+    <div class="progress">
+      <span>导入 3/3 · 并表 18 行</span>
+      <span class="bar"><i style="width:80%"></i></span>
+    </div>
+  </footer>
+</div>
+
+<script>
+// 合成数据（脱敏占位）：覆盖 正常/待核/余额异常/未校验 四态 + 收支与冲正
+const DATA = [
+ {st:'ok',no:1, t:'2026-05-14 09:12:08',d:'out',amt:-58.00,bal:12462.80,peer:'美团平台商户',sum:'扫码消费'},
+ {st:'ok',no:2, t:'2026-05-14 10:03:41',d:'in', amt:+1500.00,bal:13962.80,peer:'王*（建行 6227 **** 8841）',sum:'转账收入'},
+ {st:'pending',no:3, t:'2026-05-14 10:04:02',d:'out',amt:-1500.00,bal:12462.80,peer:'王*（建行 6227 **** 8841）',sum:'转账支出 · 疑似重复'},
+ {st:'ok',no:4, t:'2026-05-14 11:27:55',d:'out',amt:-1.34,bal:12461.46,peer:'京东商城',sum:'消费退货（原借 −1.34）'},
+ {st:'balerr',no:5, t:'2026-05-14 12:00:13',d:'in', amt:+300.00,bal:12762.46,peer:'李*（微信）',sum:'转账收入 · 余额差 0.50'},
+ {st:'ok',no:6, t:'2026-05-14 12:00:13',d:'in', amt:+50.00,bal:12812.46,peer:'红包（群）',sum:'微信红包'},
+ {st:'nocheck',no:7, t:'2026-05-14 13:44:20',d:'out',amt:-2200.00,bal:10612.46,peer:'招行信用卡还款',sum:'信用卡还款 · 欠款口径不校验'},
+ {st:'ok',no:8, t:'2026-05-14 14:21:09',d:'in', amt:+9800.00,bal:20412.46,peer:'赵**（农行 6228 **** 3310）',sum:'借款归还'},
+ {st:'pending',no:9, t:'2026-05-14 14:21:12',d:'out',amt:-9800.00,bal:10612.46,peer:'赵**（农行 6228 **** 3310）',sum:'转出 · 方向待核'},
+ {st:'ok',no:10,t:'2026-05-14 15:02:33',d:'out',amt:-3.50,bal:10608.96,peer:'滴滴出行',sum:'打车费'},
+ {st:'balerr',no:11,t:'2026-05-14 15:40:01',d:'in', amt:+200000.00,bal:210608.96,peer:'对公账户（工行）',sum:'工程款入账'},
+ {st:'ok',no:12,t:'2026-05-14 15:40:05',d:'out',amt:-200000.00,bal:10608.96,peer:'陈**（工行 6212 **** 7734）',sum:'同日转出'},
+ {st:'ok',no:13,t:'2026-05-14 16:10:47',d:'in', amt:+0.15,bal:10609.11,peer:'—',sum:'结息'},
+ {st:'pending',no:14,t:'2026-05-14 17:00:00',d:'in', amt:+600.00,bal:11209.11,peer:'支付宝（余额宝转出）',sum:'转入 · 金额符号冲突'},
+ {st:'ok',no:15,t:'2026-05-15 08:30:22',d:'out',amt:-45.00,bal:11164.11,peer:'盒马鲜生',sum:'消费'},
+ {st:'ok',no:16,t:'2026-05-15 09:00:00',d:'in', amt:+12000.00,bal:23164.11,peer:'工资代发（对公）',sum:'工资'},
+ {st:'ok',no:17,t:'2026-05-15 09:15:30',d:'out',amt:-8000.00,bal:15164.11,peer:'房东 刘*（建行）',sum:'房租转账'},
+ {st:'nocheck',no:18,t:'2026-05-15 09:20:00',d:'out',amt:-1.91,bal:15162.20,peer:'京东商城',sum:'消费退货（原借 −1.91）· 余额口径未知'},
+];
+
+const TAG = {
+  ok:      ['已确认','ok'],
+  pending: ['待核','pending'],
+  balerr:  ['余额异常','balerr'],
+  nocheck: ['未校验','nocheck'],
+};
+const DIR = { in:['收','in'], out:['支','out'] };
+
+let sel = 1;
+const tbody = document.getElementById('tbody');
+const q = document.getElementById('q');
+const stateSel = document.getElementById('state');
+const onlyPending = document.getElementById('onlyPending');
+const rowcount = document.getElementById('rowcount');
+const insBody = document.getElementById('insBody');
+const insTitle = document.getElementById('insTitle');
+const sbSel = document.getElementById('sbSel');
+const sbPending = document.getElementById('sbPending');
+
+// ===== 首页 ↔ 工作台切换 =====
+const CASES = [
+  { name:'谭磊被诈骗案', no:'TL-2026-011', sb:'待核 3 条 · 余额异常 2 条' },
+  { name:'艾仕达合同诈骗案', no:'ASD-2026-003', sb:'待核 1,204 条 · 余额异常 37 条' },
+];
+let curCase = 0;
+function enterCase(i){
+  curCase = i;
+  document.getElementById('homeView').style.display = 'none';
+  document.getElementById('workTop').style.display = 'flex';
+  document.getElementById('workMain').style.display = 'flex';
+  document.getElementById('workStatus').style.display = 'flex';
+  document.getElementById('caseName').textContent = CASES[i].name + ' · 资金流水并表';
+  document.getElementById('caseNo').textContent = '案件号 ' + CASES[i].no;
+}
+function backHome(){
+  document.getElementById('homeView').style.display = 'flex';
+  document.getElementById('workTop').style.display = 'none';
+  document.getElementById('workMain').style.display = 'none';
+  document.getElementById('workStatus').style.display = 'none';
+}
+window.enterCase = enterCase;
+window.backHome = backHome;
+
+const fmt = n => (n>=0?'+':'−') + Math.abs(n).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});
+
+function visibleRows(){
+  const kw = q.value.trim().toLowerCase();
+  const st = stateSel.value;
+  const op = onlyPending.classList.contains('on');
+  return DATA.filter(r=>{
+    if(op && r.st!=='pending') return false;
+    if(st!=='all' && r.st!==st) return false;
+    if(kw){
+      const hay = (r.peer+' '+r.sum).toLowerCase();
+      if(!hay.includes(kw)) return false;
+    }
+    return true;
+  });
+}
+
+function render(){
+  const rows = visibleRows();
+  tbody.innerHTML = '';
+  if(!rows.length){
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">没有符合条件的记录 · <a onclick="clearFilter()" style="cursor:pointer;color:var(--primary)">清除筛选</a></td></tr>';
+  }
+  rows.forEach(r=>{
+    const tr = document.createElement('tr');
+    if(r.no===sel) tr.className='sel';
+    const [txt,cls] = TAG[r.st];
+    const [dtxt,dcls] = DIR[r.d];
+    tr.innerHTML =
+      '<td><span class="tag '+cls+'">'+txt+'</span></td>'+
+      '<td class="mono">'+r.no+'</td>'+
+      '<td class="mono">'+r.t+'</td>'+
+      '<td><span class="dir '+dcls+'">'+dtxt+'</span></td>'+
+      '<td class="mono amt-'+(r.amt>=0?'pos':'neg')+'">'+fmt(r.amt)+'</td>'+
+      '<td class="mono">'+r.bal.toLocaleString('zh-CN',{minimumFractionDigits:2})+'</td>'+
+      '<td>'+r.peer+'</td>'+
+      '<td style="color:var(--text-2)">'+r.sum+'</td>';
+    tr.addEventListener('click',()=>{ sel=r.no; render(); inspect(r); });
+    tr.addEventListener('dblclick',()=>{ r.st = r.st==='pending'?'ok':'pending'; render(); inspect(r); });
+    tbody.appendChild(tr);
+  });
+  const st = stateSel.value, op = onlyPending.classList.contains('on');
+  rowcount.textContent = '共 '+DATA.length+' 条 · 显示 '+rows.length+' 条'+(op||st!=='all'?'（已筛选）':'');
+}
+
+function inspect(r){
+  insTitle.innerHTML = '原始记录核对 <span class="tag '+TAG[r.st][1]+'">'+TAG[r.st][0]+'</span>';
+  const raw = r.raw || {amt:r.amt, bal:r.bal};
+  const diff = (r.amt) - (raw.amt);
+  insBody.innerHTML =
+    '<div class="kv compare"><div style="font-size:11px;color:var(--gray-text);margin-bottom:4px">金额换算</div>'+
+    '<div class="row"><span class="k">原始金额</span><span class="v">'+fmt(raw.amt)+'（'+ (raw.dir||DIR[r.d][0]) +'）</span></div>'+
+    '<div class="arrow">↓ 方向判定 · 取绝对值 · 进正出负</div>'+
+    '<div class="row"><span class="k">标准金额</span><span class="v '+(r.amt>=0?'amt-pos':'amt-neg')+'">'+fmt(r.amt)+'</span></div>'+
+    (diff!==0?'<div class="row"><span class="k">差异</span><span class="v diff">'+fmt(diff)+'</span></div>':'')+
+    '</div>'+
+    '<div class="kv"><span class="k">原始余额</span><span class="v">'+raw.bal.toLocaleString('zh-CN',{minimumFractionDigits:2})+'</span></div>'+
+    '<div class="kv"><span class="k">标准余额</span><span class="v">'+r.bal.toLocaleString('zh-CN',{minimumFractionDigits:2})+'</span></div>'+
+    '<div class="kv"><span class="k">余额链校验</span><span class="v">'+
+      (r.st==='balerr'?'<span style="color:var(--red-text)">不平 · 差 0.50</span>':
+       r.st==='nocheck'?'<span style="color:var(--gray-text)">未校验（口径不适用）</span>':'平')+'</span></div>'+
+    '<div class="kv"><span class="k">处理规则</span><span class="v" style="font-family:var(--sans)">建行流水 v3（B 类反转）</span></div>'+
+    '<div class="src"><div class="f">建行流水_20260626.xlsx › 交易明细</div>'+
+    '<div class="loc">行 '+r.no+' · 原值已归档</div>'+
+    '<button class="btn btn-open" onclick="alert('效果稿：此处将来打开原件并定位到该行')">打开原件定位</button></div>';
+  sbSel.textContent = '#'+r.no+' · '+r.t;
+}
+
+function applyFilter(){
+  render();
+  const cur = DATA.find(r=>r.no===sel);
+  if(cur) inspect(cur);
+}
+q.addEventListener('input', applyFilter);
+stateSel.addEventListener('change', applyFilter);
+onlyPending.addEventListener('click', ()=>{
+  onlyPending.classList.toggle('on');
+  onlyPending.setAttribute('aria-checked', onlyPending.classList.contains('on'));
+  applyFilter();
+});
+onlyPending.addEventListener('keydown', e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); onlyPending.click(); }});
+sbPending.addEventListener('click', ()=>{
+  onlyPending.classList.add('on'); onlyPending.setAttribute('aria-checked','true');
+  stateSel.value='all'; applyFilter();
+});
+document.addEventListener('keydown', e=>{
+  if(e.key==='ArrowDown'||e.key==='ArrowUp'){
+    e.preventDefault();
+    const rows = visibleRows();
+    const idx = rows.findIndex(r=>r.no===sel);
+    if(rows.length){
+      const nx = e.key==='ArrowDown'? Math.min(idx+1,rows.length-1): Math.max(idx-1,0);
+      sel = rows[nx].no; render(); inspect(rows[nx]);
+    }
+  }
+});
+function clearFilter(){ q.value=''; stateSel.value='all'; onlyPending.classList.remove('on'); applyFilter(); }
+window.clearFilter = clearFilter;
+
+render();
+inspect(DATA[0]);
+</script>
+</body>
+</html>
