@@ -4,18 +4,67 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="light">
-  <meta name="theme-color" content="#203e5f">
-  <title>东启勘流 · 案件工作台</title>
+  <meta name="theme-color" content="#ffffff">
+  <title>东启勘流 · 资金流水分析</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23203e5f'/%3E%3Cpath d='M8 9h6v14H8m10-14h6v14h-6M8 16h16' fill='none' stroke='white' stroke-width='2'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="intro.css">
   <script defer src="icons.js"></script>
   <script defer src="data.js"></script>
   <script defer src="exporter.js"></script>
   <script defer src="app.js"></script>
+  <script defer src="intro.js"></script>
 </head>
-<body>
-  <a class="skip-link" href="#main">跳至工作区</a>
-  <div class="app-shell">
+<body class="intro-visible">
+  <section id="intro-screen" class="intro-screen" aria-label="东启勘流软件介绍">
+    <div class="intro-atmosphere" aria-hidden="true"></div>
+    <div class="intro-frame">
+      <header class="intro-header">
+        <a class="intro-brand" href="#intro-top" aria-label="东启勘流介绍首页">
+          <span class="intro-brand-mark" aria-hidden="true"><svg viewBox="0 0 36 36" fill="none"><path d="M7 8h22v20H7zM7 15h22M15 15v13" stroke="currentColor" stroke-width="1.6"/><path d="M23 4h9v9M4 23v9h9" stroke="currentColor" stroke-width="1.3" opacity=".4"/></svg></span>
+          <span><strong>东启勘流</strong><small>资金流水分析</small></span>
+        </a>
+        <nav class="intro-nav" aria-label="介绍页导航"><a href="#intro-capabilities">功能概览</a><a href="#intro-workflow">使用流程</a></nav>
+        <span class="intro-edition"><span></span>桌面版 · 界面预览</span>
+      </header>
+      <main id="intro-top" class="intro-main">
+        <section class="intro-hero" aria-labelledby="intro-title">
+          <div class="intro-copy">
+            <p class="intro-context"><span aria-hidden="true"></span>面向审计与案件核查</p>
+            <h1 id="intro-title" tabindex="-1">东启勘流</h1>
+            <p class="intro-headline">从繁杂流水，到清晰脉络。</p>
+            <p class="intro-description">汇集多源流水，核对每笔往来。<br>让分析有依据，让结果可追溯。</p>
+            <div class="intro-sources" aria-label="面向的流水来源"><span>银行流水</span><i></i><span>微信支付</span><i></i><span>支付宝</span></div>
+            <div class="intro-entry">
+              <button id="enter-workspace" class="intro-enter"><span>进入工作台</span><svg aria-hidden="true" viewBox="0 0 24 24" fill="none"><path d="M4 12h15m-6-6 6 6-6 6" stroke="currentColor" stroke-width="1.5"/></svg></button>
+              <label class="intro-skip"><input type="checkbox" id="skip-intro"><span class="intro-checkbox" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="m4 8 3 3 5-6"/></svg></span><span>下次打开跳过介绍页</span></label>
+              <p id="intro-preference-note" class="intro-preference-note" aria-live="polite">可在工作台「使用说明」中随时恢复</p>
+            </div>
+          </div>
+          <figure class="intro-visual">
+            <div class="intro-visual-heading"><span class="intro-live-dot" aria-hidden="true"></span>多源汇聚 · 逐笔可溯<span class="intro-visual-rule"></span><span class="intro-visual-index">资金脉络</span></div>
+            <img class="intro-flow-art" src="assets/fund-flow.svg" width="820" height="660" alt="银行、微信、支付宝的流水汇入统一账页，再关联至异常复核和来源记录的资金轨迹示意图">
+            <figcaption><span class="intro-crosshair" aria-hidden="true">+</span>循每笔资金，见完整来路<span>概念示意 · 非真实案件数据</span></figcaption>
+          </figure>
+        </section>
+        <section id="intro-capabilities" class="intro-capabilities" aria-labelledby="intro-capabilities-title">
+          <div class="intro-section-heading"><h2 id="intro-capabilities-title">把线索连成脉络</h2><p>从材料整理，到结果复核</p></div>
+          <div class="intro-capability-list">
+            <article><span class="intro-feature-icon" aria-hidden="true"><svg viewBox="0 0 28 28" fill="none"><path d="M4 7h7l3 3h10v13H4zM7 4h14v6M8 15h12M8 19h8"/></svg></span><div><h3>多源流水，统一整理</h3><p>汇集银行与支付平台材料，<br>在同一张流水表中查看。</p></div></article>
+            <article><span class="intro-feature-icon" aria-hidden="true"><svg viewBox="0 0 28 28" fill="none"><path d="m14 3 11 20H3zM14 10v6M14 19v1"/></svg></span><div><h3>异常分开，逐笔核对</h3><p>区分金额待核与余额差异，<br>把确认依据留在每笔记录中。</p></div></article>
+            <article><span class="intro-feature-icon" aria-hidden="true"><svg viewBox="0 0 28 28" fill="none"><path d="M5 4h13l5 5v15H5zM18 4v6h5M9 14h10M9 18h7"/><path d="m10 8-2 2 2 2"/></svg></span><div><h3>保留原值，回看来源</h3><p>对应来源材料与记录位置，<br>让每次确认都能回头核查。</p></div></article>
+          </div>
+        </section>
+        <section id="intro-workflow" class="intro-workflow" aria-labelledby="intro-workflow-title">
+          <div class="intro-workflow-label"><h2 id="intro-workflow-title">一次核查，四步衔接</h2><p>按案件组织工作</p></div>
+          <ol><li><span>01</span><div><h3>导入材料</h3><p>整理来源文件</p></div></li><li><span>02</span><div><h3>统一并表</h3><p>对齐记录字段</p></div></li><li><span>03</span><div><h3>异常复核</h3><p>确认金额与依据</p></div></li><li><span>04</span><div><h3>导出结果</h3><p>保留状态与来源</p></div></li></ol>
+        </section>
+      </main>
+      <footer class="intro-footer"><span class="intro-footer-name">东启勘流 <span>/</span> FundSift</span><span>内部使用</span><p>HTML 交互原型 · 工作台使用合成数据</p></footer>
+    </div>
+  </section>
+  <a id="workspace-skip-link" class="skip-link" href="#main" hidden>跳至工作区</a>
+  <div id="application" class="app-shell" hidden inert>
     <aside id="sidebar" class="sidebar" aria-label="主导航"></aside>
     <div class="main-shell">
       <header id="topbar" class="topbar"></header>

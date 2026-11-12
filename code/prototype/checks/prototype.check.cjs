@@ -10,11 +10,13 @@ let passed=0;
 const verify=(condition,message)=>{assert.ok(condition,message);passed++;};
 function setup(mutateSeed){
   const html=fs.readFileSync(path.join(root,'index.html'),'utf8');
-  const dom=new JSDOM(html,{runScripts:'outside-only',pretendToBeVisual:true});
+  const dom=new JSDOM(html,{runScripts:'outside-only',pretendToBeVisual:true,url:'https://fundsift.example/'});
   const w=dom.window;w.TextEncoder=TextEncoder;w.Blob=Blob;
   for(const file of ['icons.js','data.js','exporter.js'])w.eval(fs.readFileSync(path.join(root,file),'utf8'));
   if(mutateSeed)mutateSeed(w.FUND_DATA);
   w.eval(fs.readFileSync(path.join(root,'app.js'),'utf8'));
+  w.eval(fs.readFileSync(path.join(root,'intro.js'),'utf8'));
+  w.FUND_INTRO.enter();
   const $=s=>w.document.querySelector(s),$$=s=>[...w.document.querySelectorAll(s)];
   const click=s=>{const el=$(s);assert.ok(el,'Missing '+s);el.click();};
   const input=(s,value)=>{const el=$(s);assert.ok(el,'Missing '+s);el.value=value;el.dispatchEvent(new w.Event('input',{bubbles:true}));};
@@ -25,10 +27,10 @@ function setup(mutateSeed){
 }
 async function main(){
   let t=setup();
-  verify(t.$('h1').textContent==='案件工作台','Home opens');
+  verify(t.$('#main h1').textContent==='案件工作台','Home opens');
   verify(t.$$('.case-table tbody tr').length===4,'Four synthetic cases');
   verify(t.$$('.summary-number').map(e=>e.textContent.trim()).join('|')==='4个|14份|55条|6条','All homepage metrics match records');
-  for(const route of ['materials','flows','review','exports','home']){t.nav(route);verify(t.$('h1').textContent===({materials:'材料管理',flows:'并表流水',review:'异常复核',exports:'结果导出',home:'案件工作台'})[route],route+' page renders');}
+  for(const route of ['materials','flows','review','exports','home']){t.nav(route);verify(t.$('#main h1').textContent===({materials:'材料管理',flows:'并表流水',review:'异常复核',exports:'结果导出',home:'案件工作台'})[route],route+' page renders');}
   t.input('#case-query','恒舟');verify(t.$$('.case-table tbody tr').length===1,'Case search');
   t.input('#case-query','不存在');verify(t.$$('.case-table tbody tr').length===0&&!!t.$('.empty-state'),'Case empty state');
   t.input('#case-query','');t.action('case-tab','[data-value="archived"]');verify(t.$$('.case-table tbody tr').length===1,'Archived case filter');
@@ -62,7 +64,7 @@ async function main(){
   t.nav('materials');t.action('demo-import');t.action('add-demo');verify(t.$$('.ledger-table tbody tr').length===3,'Demo import adds three traceable records');t.action('inspect');t.action('source');verify(t.$('.source-preview-table').textContent.includes('记录'),'New source preview works');t.action('close-modal');
   t.nav('materials');const file=new t.w.File(['测试内容'],'自选文件.csv',{type:'text/csv'});Object.defineProperty(t.$('#file-picker'),'files',{configurable:true,value:[file]});t.$('#file-picker').dispatchEvent(new t.w.Event('change',{bubbles:true}));verify(t.$('.modal-body').textContent.includes('不读取文件内容'),'Real file boundary explicit');t.action('register-files');verify(t.$('.data-table tbody').textContent.includes('自选文件.csv'),'File metadata registered pending');
   t.nav('home');t.action('new-case');t.action('save-case');verify(t.$('#form-error').textContent.length>0,'New case requires name and number');t.input('#new-name','新案件');t.input('#new-number','DQ-2026-018');t.action('save-case');verify(t.$('#form-error').textContent.includes('已存在'),'Duplicate case number blocked');
-  t.input('#new-name','<img src=x onerror=alert(1)>');t.input('#new-number','DEMO-NEW');t.action('save-case');verify(!t.$('img'),'Case name escaped instead of HTML');verify(t.$('h1').textContent==='材料管理'&&!!t.$('.empty-state'),'New case has empty materials');
+  t.input('#new-name','<img src=x onerror=alert(1)>');t.input('#new-number','DEMO-NEW');t.action('save-case');verify(!t.$('#application img'),'Case name escaped instead of HTML');verify(t.$('#main h1').textContent==='材料管理'&&!!t.$('.empty-state'),'New case has empty materials');
   t.action('switch-case');t.action('choose-case','[data-id="case-2"]');verify(t.$('.data-table tbody').textContent.includes('货款往来'),'Case switching isolates file list');
   t.dom.window.close();
   // Use an untouched session for exported totals, and capture actual Blob bytes.

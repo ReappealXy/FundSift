@@ -199,12 +199,12 @@
       Object.assign(state,{dateFrom:from,dateTo:to,minAmount:min,maxAmount:max,sourceId:$('#filter-source').value,page:1});closeModal();render();
     },
     'clear-filters':()=>{resetFlowFilters();render();},'refresh-flows':()=>{resetFlowFilters();state.inspected=null;render();toast('已重置筛选与选择。');},'density':()=>{state.density=!state.density;render();},
-    'close-modal':closeModal,'global-search':globalSearch,
+    'close-modal':closeModal,'global-search':globalSearch,'intro':()=>{closeModal();window.FUND_INTRO?.show();},
     'search-case':el=>{closeModal();resetFlowFilters();navigate('flows',el.dataset.id);},
     'search-flow':el=>{const f=data.flows.find(r=>r.id===el.dataset.id);closeModal();navigate('flows',f.caseId);resetFlowFilters();state.page=Math.floor(filteredFlows().findIndex(r=>r.id===f.id)/state.pageSize)+1;state.inspected=f.id;render();},
     'do-export':()=>downloadExport(),
     'download-history':el=>{const h=data.exports.find(e=>e.id===el.dataset.id),scope=h.scopeKey||(h.scope.includes('仅待核')?'pending':h.scope.includes('仅已确认')?'confirmed':'all');downloadExport(scope,h.format==='csv'?'csv':'xlsx',h.includeSource!==false,h);},
-    'help':()=>modal('使用说明',`<div class="guide-list">${[['folder','先建案件，再整理材料','案件之间的数据分开。可从工作台继续案件，或使用左侧案件选择器切换。'],['table','在并表流水中核对','用搜索、渠道和日期金额筛选定位记录。点击一行可查看金额规则与来源位置。'],['alert','异常逐笔确认','金额待核需要明确确认金额与方向；接受余额差异不会改变交易金额。'],['download','导出当前案件结果','支持真实的 XLSX 与 CSV 示例文件。待核金额留空，Excel 中单独列出待核清单。']].map(([i,t,d])=>`<div class="guide-item"><span class="guide-icon">${ico(i,16)}</span><div><b>${t}</b><div>${d}</div></div></div>`).join('')}</div><div class="shortcut-list"><span><kbd>Ctrl K</kbd> 搜索</span><span><kbd>Esc</kbd> 关闭弹窗 / 详情</span></div><div class="quiet-note">这是界面交互原型，使用合成数据；刷新后恢复初始状态。文件解析、数据库与正式审计日志将在软件开发阶段接入。</div>`,btn('知道了','close-modal',null,'primary'),true)
+    'help':()=>modal('使用说明',`<div class="guide-list">${[['folder','先建案件，再整理材料','案件之间的数据分开。可从工作台继续案件，或使用左侧案件选择器切换。'],['table','在并表流水中核对','用搜索、渠道和日期金额筛选定位记录。点击一行可查看金额规则与来源位置。'],['alert','异常逐笔确认','金额待核需要明确确认金额与方向；接受余额差异不会改变交易金额。'],['download','导出当前案件结果','支持真实的 XLSX 与 CSV 示例文件。待核金额留空，Excel 中单独列出待核清单。']].map(([i,t,d])=>`<div class="guide-item"><span class="guide-icon">${ico(i,16)}</span><div><b>${t}</b><div>${d}</div></div></div>`).join('')}</div><div class="shortcut-list"><span><kbd>Ctrl K</kbd> 搜索</span><span><kbd>Esc</kbd> 关闭弹窗 / 详情</span></div><div style="border-bottom:1px solid var(--line);padding:3px 0 18px"><label class="form-check"><input id="startup-intro" type="checkbox" ${!window.FUND_INTRO?.shouldSkip()?'checked':''} ${window.FUND_INTRO&&!window.FUND_INTRO.canRemember()?'disabled':''}>打开时显示软件介绍首页</label><div class="field-note">启动偏好保存在当前浏览器。${window.FUND_INTRO&&!window.FUND_INTRO.canRemember()?'当前浏览器无法保存该偏好。':''}</div></div><div class="quiet-note">这是界面交互原型，使用合成数据；刷新后恢复初始状态。文件解析、数据库与正式审计日志将在软件开发阶段接入。</div>`,btn('查看软件介绍','intro','home')+btn('知道了','close-modal',null,'primary'),true)
   };
   document.addEventListener('click',event=>{
     if(event.target.matches('input,select,textarea,label')||event.target.closest('label'))return;
@@ -225,6 +225,7 @@
     if(map[el.id]){state[map[el.id]]=el.id==='page-size'?Number(el.value):el.value;state.page=1;render();}
     if(el.classList.contains('row-check')){el.checked?state.selected.add(el.dataset.id):state.selected.delete(el.dataset.id);render();}
     if(el.id==='select-page'){filteredFlows().slice((state.page-1)*state.pageSize,state.page*state.pageSize).forEach(f=>el.checked?state.selected.add(f.id):state.selected.delete(f.id));render();}
+    if(el.id==='startup-intro'){if(!window.FUND_INTRO?.setSkip(!el.checked)){el.checked=!window.FUND_INTRO?.shouldSkip();el.disabled=true;toast('浏览器无法保存启动偏好，下次仍会显示介绍页。');}}
     if(el.name==='export-scope'){state.exportScope=el.value;render();}if(el.name==='export-format'){state.exportFormat=el.value;render();}if(el.id==='export-source'){state.exportSource=el.checked;render();}
     if(el.id==='file-picker'&&el.files.length)handleFiles(Array.from(el.files));
   });
@@ -233,12 +234,16 @@
   document.addEventListener('dragleave',event=>{if(event.target.closest('#drop-zone'))$('#drop-zone').classList.remove('dragging');});
   document.addEventListener('drop',event=>{if(event.target.closest('#drop-zone')){event.preventDefault();$('#drop-zone').classList.remove('dragging');handleFiles(Array.from(event.dataTransfer.files));}});
   document.addEventListener('keydown',event=>{
+    if(document.body.classList.contains('intro-visible'))return;
     if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();globalSearch();return;}
     if(event.key==='Escape'){if($('#modal-root').firstChild)closeModal();else if(state.inspected)closeInspector();return;}
     const dialog=$('.modal');if(dialog&&event.key==='Tab'){const focusable=$$('button:not(:disabled),input,select,textarea,[tabindex="0"]',dialog),first=focusable[0],last=focusable.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus();}return;}
     const row=event.target.closest('tr[data-action]');if(row&&event.target===row&&['Enter',' '].includes(event.key)){event.preventDefault();actions[row.dataset.action]?.(row);}
   });
   window.addEventListener('hashchange',()=>{const route=location.hash.slice(1);if(labels[route]&&route!==state.route){state.route=route;state.inspected=null;render();}});
+  document.addEventListener('fundsift:enter-workspace',()=>navigate('home'));
+  document.addEventListener('fundsift:show-intro',()=>{closeModal();state.inspected=null;renderInspector();$('#toast-root').replaceChildren();});
+  document.addEventListener('fundsift:resume-workspace',()=>render());
   if(labels[location.hash.slice(1)])state.route=location.hash.slice(1);
   render();
 }());
