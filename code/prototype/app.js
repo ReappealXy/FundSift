@@ -1,6 +1,8 @@
 (function () {
   'use strict';
-  const data = JSON.parse(JSON.stringify(window.FUND_DATA));
+  const desktopBridge = window.fundsiftDesktop || null;
+  const desktop = desktopBridge ? {loading:true,busy:false,saving:false,workspacePath:null,needsWorkspace:true,error:'',notice:''} : null;
+  const data = desktop ? {cases:[],files:[],flows:[],exports:[]} : JSON.parse(JSON.stringify(window.FUND_DATA));
   const $ = (s, root = document) => root.querySelector(s);
   const $$ = (s, root = document) => Array.from(root.querySelectorAll(s));
   const esc = v => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -9,7 +11,7 @@
   const count = v => Number(v).toLocaleString('zh-CN');
   const now = () => new Date().toLocaleString('sv-SE').slice(0, 16);
   const labels = {home:'案件工作台',materials:'材料管理',flows:'并表流水',review:'异常复核',exports:'结果导出'};
-  const state = {route:'home',caseId:'case-1',caseQuery:'',caseTab:'all',fileQuery:'',fileTab:'all',filePlatform:'all',flowQuery:'',flowTab:'all',flowPlatform:'all',sourceId:'',page:1,pageSize:15,selected:new Set(),inspected:null,reviewTab:'all',reviewId:null,density:false,dateFrom:'',dateTo:'',minAmount:'',maxAmount:'',exportScope:'all',exportFormat:'xlsx',exportSource:true};
+  const state = {route:'home',caseId:desktop?null:'case-1',caseQuery:'',caseTab:'all',fileQuery:'',fileTab:'all',filePlatform:'all',flowQuery:'',flowTab:'all',flowPlatform:'all',sourceId:'',page:1,pageSize:15,selected:new Set(),inspected:null,reviewTab:'all',reviewId:null,density:false,dateFrom:'',dateTo:'',minAmount:'',maxAmount:'',exportScope:'all',exportFormat:'xlsx',exportSource:true};
   let lastFocus = null, importQueue = [];
   const currentCase = () => data.cases.find(c => c.id === state.caseId);
   const caseFlows = (id = state.caseId) => data.flows.filter(f => f.caseId === id);
@@ -29,6 +31,7 @@
     render();$('#main').scrollTop = 0;
   }
   function renderShell() {
+    if(desktop){renderDesktopShell();return;}
     const c = currentCase(), rows = caseFlows();
     $('#sidebar').innerHTML = `<div class="brand"><div class="brand-mark">${ico('table',24)}</div><div class="brand-copy"><div class="brand-name">东启勘流</div><div class="brand-sub">资金流水分析工作台</div></div></div>
       <nav aria-label="工作区"><div class="nav-group"><button class="nav-item ${state.route === 'home' ? 'active' : ''}" data-action="nav" data-route="home" title="案件工作台" ${state.route === 'home' ? 'aria-current="page"' : ''}>${ico('home')}<span class="nav-label">案件工作台</span></button></div>
@@ -45,11 +48,118 @@
     const scope=['sidebar','topbar','main','inspector'].find(id=>document.getElementById(id).contains(focused));
     const focusData=focused?.dataset?{...focused.dataset}:{};
     const tag=focused?.tagName;
-    renderShell();$('#main').innerHTML = `<div class="page ${state.density ? 'density-compact' : ''}">${({home:homePage,materials:materialsPage,flows:flowsPage,review:reviewPage,exports:exportsPage}[state.route])()}</div>`;renderInspector();
+    renderShell();$('#main').innerHTML = `<div class="page ${state.density ? 'density-compact' : ''}">${desktop?desktopPage():({home:homePage,materials:materialsPage,flows:flowsPage,review:reviewPage,exports:exportsPage}[state.route])()}</div>`;renderInspector();
     if(scope){
       const replacement=focusId?document.getElementById(focusId):focusData.action?$$('[data-action]',document.getElementById(scope)).find(el=>el.tagName===tag&&Object.entries(focusData).every(([k,v])=>el.dataset[k]===v)):null;
       (replacement||$('#main')).focus({preventScroll:true});
     }
+  }
+  function renderDesktopShell(){
+    const c=currentCase(),ready=!desktop.loading&&!desktop.error&&!desktop.needsWorkspace;
+    const canOpen=ready&&c?.available!==false&&Boolean(c),locked=desktop.busy||desktop.saving;
+    $('#sidebar').innerHTML=`<div class="brand"><div class="brand-mark">${ico('table',24)}</div><div class="brand-copy"><div class="brand-name">东启勘流</div><div class="brand-sub">资金流水分析工作台</div></div></div>
+      <nav aria-label="工作区"><div class="nav-group"><button class="nav-item ${state.route==='home'?'active':''}" data-action="nav" data-route="home" ${state.route==='home'?'aria-current="page"':''} ${locked?'disabled':''}>${ico('home')}<span class="nav-label">案件工作台</span></button></div>
+      <div class="nav-title">当前案件</div><button class="case-switch" data-action="switch-case" title="切换案件" ${!ready||!data.cases.length||locked?'disabled':''}><span class="switch-symbol">${ico('folder',16)}</span><span class="grow"><span class="case-label">${esc(c?.number||'尚未打开案件')}</span><span class="case-name truncate" style="display:block">${esc(c?.name||'请先新建或打开案件')}</span></span>${ico('chevronDown',12)}</button>
+      <div class="nav-group">${[['materials','files'],['flows','table'],['review','alert'],['exports','download']].map(([r,i])=>`<button class="nav-item ${state.route===r?'active':''}" data-action="nav" data-route="${r}" ${state.route===r?'aria-current="page"':''} ${!canOpen||locked?'disabled':''}>${ico(i)}<span class="nav-label">${labels[r]}</span></button>`).join('')}</div></nav>
+      <div class="sidebar-bottom"><button class="nav-item" data-action="help" title="使用说明" ${locked?'disabled':''}>${ico('help')}<span class="nav-label">使用说明</span></button><div class="demo-chip desktop-chip"><span class="dot"></span>本地桌面版 · M0</div></div>`;
+    $('#topbar').innerHTML=`<div class="breadcrumb"><button data-action="nav" data-route="home" aria-label="返回工作台" ${locked?'disabled':''}>${ico('home',15)}</button>${ico('chevronRight',11)}${state.route!=='home'&&c?`<span class="truncate">${esc(c.name)}</span>${ico('chevronRight',11)}`:''}<strong>${labels[state.route]}</strong></div><div class="top-right"><button class="global-search" data-action="global-search" ${!ready||locked?'disabled':''}>${ico('search',16)}搜索案件名称、编号<kbd>Ctrl K</kbd></button><span class="local-tag">${ico('shield',13)}本地工作区</span><span class="avatar" title="内部使用">内</span></div>`;
+    $('#statusbar').innerHTML=`<span><span class="dot"></span>${desktop.loading?'正在读取工作区':desktop.error?'工作区读取失败':desktop.needsWorkspace?'尚未选择数据目录':'本地桌面版'}</span><span class="divider"></span><span>${desktop.loading||desktop.error?'案件数量待读取':state.route==='home'?`${data.cases.length} 个已登记案件`:esc(c?.number||'未打开案件')}</span><span class="last" title="${esc(desktop.workspacePath||'')}">${esc(desktop.workspacePath||'首次使用，请选择案件数据保存目录')}</span>`;
+    document.title=`东启勘流 · ${labels[state.route]}`;
+  }
+  function desktopPage(){
+    const heading=`<div class="page-head"><div><h1>${labels[state.route]}</h1><p class="page-sub">${state.route==='home'?'整理材料，核对流水，从这里继续工作。':esc(currentCase()?.name||'尚未打开案件')}</p></div></div>`;
+    if(desktop.loading)return heading+`<section class="panel" aria-busy="true">${empty('正在读取本地工作区','请稍候，正在核对案件目录和数据库。')}</section>`;
+    if(desktop.error)return heading+`<section class="panel desktop-error" role="alert">${empty('工作区读取失败',esc(desktop.error),btn('重试读取','retry-workspace','refresh','primary')+(!desktop.workspacePath?btn('选择数据目录','choose-workspace','folderOpen'):''))}</section>`;
+    if(desktop.needsWorkspace)return heading+`<section class="panel desktop-setup">${empty('先选择案件数据保存目录','案件数据库保存在你选择的本机目录中。这里不会移动或导入原始案件材料。',btn(desktop.busy?'正在选择…':'选择数据目录','choose-workspace','folderOpen','primary',desktop.busy?'disabled':''))}${desktop.notice?`<p class="desktop-notice" role="status">${esc(desktop.notice)}</p>`:''}</section>`;
+    if(state.route==='home')return desktopHomePage();
+    const c=currentCase();
+    if(!c)return heading+`<section class="panel">${empty('请先打开案件','从案件工作台新建案件，或打开已有案件。',btn('返回案件工作台','nav','home','primary','data-route="home"'))}</section>`;
+    if(c.available===false)return heading+`<section class="panel desktop-error" role="alert">${empty('案件暂不可用',esc(c.error||'无法读取案件数据库，请核对保存目录。'),btn('返回案件工作台','nav','home','primary','data-route="home"'))}</section>`;
+    const detail={materials:['材料导入尚未接入','案件已保存在本地。真实文件识别、解析和入库将在后续阶段接入，当前版本不会登记或模拟导入材料。','files'],flows:['并表查询尚未接入','当前版本已接通案件保存；真实流水导入与数据库查询完成后，可在这里核对流水。','table'],review:['异常复核尚未接入','真实金额引擎与异常记录尚未接入，当前不会生成待核记录或进行模拟确认。','alert'],exports:['正式导出尚未接入','后续将从案件数据库导出真实结果，当前版本不会下载示例流水或生成导出历史。','download']}[state.route];
+    return heading+`<section class="panel desktop-stage"><div class="desktop-stage-symbol">${ico(detail[2],29)}</div><h2>${detail[0]}</h2><p>${detail[1]}</p><div class="desktop-saved">${ico('checkCircle',15)}案件名称与编号已保存，关闭软件后仍可继续打开。</div>${btn('返回案件工作台','nav','home','','data-route="home"')}</section>`;
+  }
+  function desktopHomePage(){
+    const locked=desktop.busy||desktop.saving,query=state.caseQuery.toLowerCase();
+    const cases=data.cases.filter(c=>(c.name+' '+c.number).toLowerCase().includes(query)).sort((a,b)=>(b.updatedAt||'').localeCompare(a.updatedAt||''));
+    const unavailable=data.cases.filter(c=>c.available===false||!c.stats),available=data.cases.filter(c=>c.available!==false&&c.stats);
+    const summary=(field)=>available.reduce((sum,c)=>sum+(Number.isFinite(c.stats?.[field])?c.stats[field]:0),0);
+    const statsNote=unavailable.length?`${unavailable.length} 个案件暂未计入`:'当前可读取案件';
+    const summaries=[['folder','已登记案件',data.cases.length,'个','按案件独立保存'],['files','材料',summary('files'),'份',statsNote],['table','有效流水',summary('flows'),'条',statsNote],['alert','待核记录',summary('pending'),'条',statsNote]];
+    const c=currentCase(),date=new Date().toLocaleDateString('zh-CN',{year:'numeric',month:'long',day:'numeric',weekday:'long'});
+    return `<div class="page-head"><div><h1>案件工作台</h1><p class="page-sub">整理材料，核对流水，从这里继续工作。</p></div><div class="page-actions"><span class="date-note">${esc(date)}</span>${btn('新建案件','new-case','plus','primary',locked?'disabled':'')}</div></div>
+      <div class="desktop-workspace-line">${ico('folderOpen',15)}<span>数据目录</span><span class="desktop-path" title="${esc(desktop.workspacePath)}">${esc(desktop.workspacePath)}</span>${btn(desktop.busy?'正在读取…':'刷新列表','retry-workspace','refresh','quiet small',locked?'disabled':'')}</div>
+      ${desktop.notice?`<div class="desktop-notice" role="status">${esc(desktop.notice)}</div>`:''}
+      <div class="summary-strip">${summaries.map(([i,l,n,u,d])=>`<div class="summary-item"><div class="summary-label">${ico(i,14)} ${l}</div><div class="summary-number num">${i!=='folder'&&unavailable.length&&!available.length?'—':count(n)}<span class="unit">${u}</span></div><div class="summary-detail">${esc(d)}</div></div>`).join('')}</div>
+      ${unavailable.length?`<div class="desktop-unavailable" role="status">${ico('alert',15)}有 ${unavailable.length} 个案件暂不可读；材料、有效流水和待核数仅统计可读案件，不代表工作区全部结果。</div>`:''}
+      ${c&&c.available!==false?`<section class="panel desktop-current"><div><div class="muted">当前案件</div><h2>${esc(c.name)}</h2><span class="num secondary">${esc(c.number)}</span></div><div class="desktop-current-action"><span class="muted">名称与编号已保存在本地</span>${btn('打开案件','open-case','arrowRight','primary',`data-id="${esc(c.id)}" ${locked?'disabled':''}`)}</div></section>`:''}
+      <div class="section-title"><h2>案件列表 <span class="subcount">${cases.length}</span></h2><span class="muted">名称与编号</span></div>
+      <section class="panel"><div class="table-tools">${search('case-query','搜索案件名称或编号',state.caseQuery)}<span class="push muted" style="font-size:11px">按更新时间排列</span></div><div class="table-scroll"><table class="data-table case-table desktop-case-table"><thead><tr><th>案件名称 / 编号</th><th>材料</th><th>有效流水</th><th>待核记录</th><th>数据状态</th><th>最近更新</th><th></th></tr></thead><tbody>${cases.map(row=>`<tr class="click-row" data-action="open-case" data-id="${esc(row.id)}" tabindex="0"><td><div class="case-cell"><span class="folder-symbol">${ico('folder',21)}</span><div><div class="cell-title">${esc(row.name)}</div><div class="cell-note num">${esc(row.number)}</div></div></div></td>${['files','flows','pending'].map(key=>`<td class="num">${row.available===false||!row.stats||!Number.isFinite(row.stats[key])?'—':count(row.stats[key])}</td>`).join('')}<td>${row.available===false?status('error','暂不可用'):status('confirmed','可打开')}${row.available===false?`<div class="cell-note desktop-case-error">${esc(row.error||'数据库不可读')}</div>`:''}</td><td class="num secondary" style="font-size:11px">${esc((row.updatedAt||'').replace('T',' ').slice(0,16))}</td><td class="right">${ico('arrowRight',15)}</td></tr>`).join('')}</tbody></table>${cases.length?'':empty(data.cases.length?'没有找到案件':'还没有案件',data.cases.length?'换个名称或编号再试试。':'新建第一个案件，名称与编号会保存在本地。',data.cases.length?'':btn('新建案件','new-case','plus','primary',locked?'disabled':''))}</div><div class="table-footer">共 ${cases.length} 个案件<span style="margin-left:auto">本地数据库保存 · 重启后可继续打开</span></div></section>`;
+  }
+  function desktopError(error){return typeof error==='string'?error:typeof error?.message==='string'?error.message:'操作未完成，请重试。';}
+  function normalizeDesktopCase(value){return {...value,error:value?.error?desktopError(value.error):null};}
+  async function desktopCall(method,...args){
+    const result=await desktopBridge[method](...args);
+    if(!result||result.ok!==true)throw new Error(result?.error?.message||'无法完成本地操作，请重试。');
+    return result.data;
+  }
+  function applyDesktopState(value){
+    if(!value||!Array.isArray(value.cases))throw new Error('工作区返回的数据不完整，请重试。');
+    desktop.workspacePath=value.workspacePath||null;desktop.needsWorkspace=Boolean(value.needsWorkspace);
+    data.cases=value.cases.map(normalizeDesktopCase);data.files=[];data.flows=[];data.exports=[];
+    state.caseId=data.cases.some(c=>c.id===value.currentCaseId&&c.available!==false)?value.currentCaseId:null;
+    state.route='home';resetFlowFilters();state.inspected=null;
+  }
+  async function loadDesktop(choose=false){
+    if(desktop.busy||desktop.saving||choose&&!desktop.needsWorkspace)return;
+    desktop.busy=true;desktop.loading=!choose;desktop.error='';desktop.notice='';render();
+    try{
+      const value=await desktopCall(choose?'chooseWorkspace':'getState');
+      if(value?.cancelled){desktop.notice='尚未选择数据目录。准备好后可再次选择。';return;}
+      applyDesktopState(value);
+    }catch(error){desktop.error=desktopError(error);}
+    finally{desktop.busy=false;desktop.loading=false;render();document.dispatchEvent(new CustomEvent('fundsift:desktop-ready'));}
+  }
+  function desktopNewCase(){
+    if(desktop.busy||desktop.saving||desktop.needsWorkspace||desktop.error)return;
+    modal('新建案件',`<div class="field"><label for="new-name">案件名称</label><input id="new-name" class="text-input" maxlength="40" placeholder="例如：某公司资金核查"></div><div class="field"><label for="new-number">案件编号</label><input id="new-number" class="text-input" maxlength="30" placeholder="例如：DQ-2026-019"></div><div class="field-note">编号在当前工作区内唯一；同名案件可使用不同编号。</div><div class="inline-error" id="form-error" role="alert"></div>`,`<span class="footnote">保存到当前数据目录</span>${btn('取消','close-modal')}${btn('创建案件','save-case','check','primary')}`);
+  }
+  function upsertDesktopCase(value){
+    value=normalizeDesktopCase(value);
+    const found=data.cases.findIndex(c=>c.id===value.id);
+    if(found<0)data.cases.unshift(value);else data.cases[found]=value;
+  }
+  async function saveDesktopCase(){
+    if(desktop.saving||desktop.busy)return;
+    const name=$('#new-name')?.value.trim(),number=$('#new-number')?.value.trim(),errorEl=$('#form-error');
+    if(!errorEl)return;
+    if(!name||!number||name.length>40||number.length>30){errorEl.textContent='请填写案件名称（最多40字）和编号（最多30字）。';return;}
+    if(data.cases.some(c=>c.number===number)){errorEl.textContent='此案件编号已存在，请换一个编号。';return;}
+    desktop.saving=true;errorEl.textContent='';$$('button,input', $('.modal')).forEach(el=>el.disabled=true);
+    try{
+      const value=await desktopCall('createCase',{name,number});
+      if(!value?.id)throw new Error('案件保存结果不完整，请刷新列表核对。');
+      upsertDesktopCase(value);state.caseId=value.id;desktop.notice='';closeModal();navigate('materials',value.id);toast('案件已保存，关闭软件后可继续打开。');
+    }catch(error){if(errorEl.isConnected)errorEl.textContent=desktopError(error);}
+    finally{desktop.saving=false;$$('button,input', $('.modal')||document.createElement('div')).forEach(el=>el.disabled=false);render();}
+  }
+  async function openDesktopCase(id){
+    if(desktop.busy||desktop.saving||desktop.needsWorkspace)return;
+    desktop.busy=true;desktop.notice='';render();
+    try{
+      const value=await desktopCall('openCase',id);
+      if(!value?.id||value.id!==id||value.available===false)throw new Error(value?.error?desktopError(value.error):'案件数据库暂不可读。');
+      upsertDesktopCase(value);closeModal();navigate('materials',value.id);
+    }catch(error){
+      const c=data.cases.find(row=>row.id===id);if(c){c.available=false;c.error=desktopError(error);c.stats=null;}
+      desktop.notice=desktopError(error);closeModal();navigate('home');
+    }finally{desktop.busy=false;render();}
+  }
+  function desktopSwitchCase(){
+    if(desktop.busy||desktop.saving)return;
+    modal('切换案件',`<div class="search-results" style="margin:0">${data.cases.map(c=>`<button class="search-result" data-action="choose-case" data-id="${esc(c.id)}">${ico('folder',20)}<span class="grow"><span>${esc(c.name)}</span><span class="cell-note" style="display:block">${esc(c.number)}</span></span>${c.available===false?status('error','暂不可用'):c.id===state.caseId?ico('check',17):ico('arrowRight',14)}</button>`).join('')}</div>`,btn('新建案件','new-case','plus'));
+  }
+  function desktopHelp(){
+    modal('使用说明',`<div class="guide-list"><div class="guide-item"><span class="guide-icon">${ico('folder',16)}</span><div><b>当前可用：本地案件管理</b><div>选择数据目录后，新建、打开和切换案件。案件名称与编号写入本地数据库，重启后继续保留。</div></div></div><div class="guide-item"><span class="guide-icon">${ico('table',16)}</span><div><b>流水功能后续接入</b><div>材料解析、并表查询、异常复核和正式导出尚未接入。本版本不会把合成演示数据写入案件。</div></div></div></div><div class="desktop-workspace-info"><b>数据目录</b><div>${esc(desktop.workspacePath||'尚未选择')}</div>${desktop.needsWorkspace?btn('选择数据目录','choose-workspace','folderOpen'):''}</div><div class="shortcut-list"><span><kbd>Ctrl K</kbd> 搜索案件名称 / 编号</span><span><kbd>Esc</kbd> 关闭弹窗</span></div><div style="padding:15px 0"><label class="form-check"><input id="startup-intro" type="checkbox" ${!window.FUND_INTRO?.shouldSkip()?'checked':''} ${window.FUND_INTRO&&!window.FUND_INTRO.canRemember()?'disabled':''}>打开时显示软件介绍首页</label><div class="field-note">启动选择保存在本机。案件数据保存在上方的数据目录，与启动选择分开。</div></div>`,btn('查看软件介绍','intro','home')+btn('知道了','close-modal',null,'primary'),true);
   }
   function homePage() {
     const c=currentCase(),rows=caseFlows(),files=caseFiles();
@@ -110,7 +220,8 @@
     if(!$('#modal-root').firstChild)lastFocus=document.activeElement;
     $('#modal-root').innerHTML=`<div class="modal-overlay"><section class="modal ${wide?'wide':''}" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-head"><h2 id="modal-title">${title}</h2><button class="icon-btn" data-action="close-modal" aria-label="关闭弹窗">${ico('close')}</button></div><div class="modal-body">${body}</div>${foot?`<div class="modal-foot">${foot}</div>`:''}</section></div>`;
     ['main','sidebar','topbar','inspector'].forEach(id=>document.getElementById(id).inert=true);
-    requestAnimationFrame(()=>{const focus=$('input:not([type="hidden"]),select,textarea,button',$('.modal-body'))||$('.modal-head button');focus?.focus();});
+    const dialog=$('.modal');
+    requestAnimationFrame(()=>{if(!dialog?.isConnected)return;const focus=$('input:not([type="hidden"]),select,textarea,button',$('.modal-body',dialog))||$('.modal-head button',dialog);focus?.focus();});
   }
   function closeModal(){
     $('#modal-root').innerHTML='';['main','sidebar','topbar','inspector'].forEach(id=>document.getElementById(id).inert=false);if(lastFocus?.isConnected)lastFocus.focus();
@@ -136,10 +247,20 @@
   function filterModal(){
     modal('筛选流水',`<div class="filter-fields"><div class="field"><label for="date-from">开始日期</label><input type="date" id="date-from" class="text-input" value="${state.dateFrom}"></div><div class="field"><label for="date-to">结束日期</label><input type="date" id="date-to" class="text-input" value="${state.dateTo}"></div><div class="field"><label for="min-amount">金额下限（元，允许负数）</label><input type="number" step="0.01" id="min-amount" class="text-input" value="${esc(state.minAmount)}"></div><div class="field"><label for="max-amount">金额上限（元，允许负数）</label><input type="number" step="0.01" id="max-amount" class="text-input" value="${esc(state.maxAmount)}"></div></div><div class="field"><label for="filter-source">来源材料</label><select id="filter-source" class="text-input"><option value="">全部材料</option>${caseFiles().map(f=>`<option value="${f.id}" ${f.id===state.sourceId?'selected':''}>${esc(f.name)}</option>`).join('')}</select></div><div class="inline-error" id="form-error" role="alert"></div>`,`${btn('取消','close-modal')}${btn('应用筛选','apply-filters','filter','primary')}`);
   }
-  function globalSearch(){modal('搜索工作区',`<input class="text-input" id="global-query" placeholder="输入案件名称、对方名称或摘要" autocomplete="off" aria-label="搜索工作区"><div id="global-results" class="search-results"><div class="muted" style="padding:12px 0">搜索示例工作区中的案件与流水。</div></div>`,'',true);}
+  function globalSearch(){
+    if(desktop){
+      if(desktop.busy||desktop.saving||desktop.loading||desktop.needsWorkspace||desktop.error)return;
+      modal('搜索案件',`<input class="text-input" id="global-query" placeholder="输入案件名称或编号" autocomplete="off" aria-label="搜索案件名称或编号"><div class="field-note">搜索范围：当前工作区的案件名称与编号。流水查询尚未接入。</div><div id="global-results" class="search-results"><div class="muted" style="padding:12px 0">输入关键字开始搜索。</div></div>`,'',true);return;
+    }
+    modal('搜索工作区',`<input class="text-input" id="global-query" placeholder="输入案件名称、对方名称或摘要" autocomplete="off" aria-label="搜索工作区"><div id="global-results" class="search-results"><div class="muted" style="padding:12px 0">搜索示例工作区中的案件与流水。</div></div>`,'',true);
+  }
   function renderSearch(q){
     const query=q.trim().toLowerCase();
     if(!query){$('#global-results').innerHTML='<span class="muted">输入关键字开始搜索。</span>';return;}
+    if(desktop){
+      const cases=data.cases.filter(c=>(c.name+' '+c.number).toLowerCase().includes(query));
+      $('#global-results').innerHTML=cases.map(c=>`<button class="search-result" data-action="search-case" data-id="${esc(c.id)}">${ico('folder',19)}<span class="grow"><b>${esc(c.name)}</b><span class="cell-note" style="display:block">${esc(c.number)} / 案件</span></span>${c.available===false?status('error','暂不可用'):ico('arrowRight',14)}</button>`).join('')+(cases.length?'':'<div class="muted">未找到匹配案件。</div>');return;
+    }
     const cases=data.cases.filter(c=>(c.name+c.number).toLowerCase().includes(query)),flows=data.flows.filter(f=>(f.peer+f.summary+f.account).toLowerCase().includes(query)).slice(0,8);
     $('#global-results').innerHTML=cases.map(c=>`<button class="search-result" data-action="search-case" data-id="${c.id}">${ico('folder',19)}<span class="grow"><b>${esc(c.name)}</b><span class="cell-note" style="display:block">${esc(c.number)} / 案件</span></span>${ico('arrowRight',14)}</button>`).join('')+flows.map(f=>`<button class="search-result" data-action="search-flow" data-id="${f.id}">${ico('receipt',19)}<span class="grow"><span>${esc(f.peer)} · ${esc(f.summary)}</span><span class="cell-note" style="display:block">${esc(data.cases.find(c=>c.id===f.caseId).name)} / ${esc(f.time)}</span></span><span class="num">${money(f.amount,true)}</span></button>`).join('')+(!cases.length&&!flows.length?'<div class="muted">未找到匹配结果。</div>':'');
   }
@@ -206,9 +327,25 @@
     'download-history':el=>{const h=data.exports.find(e=>e.id===el.dataset.id),scope=h.scopeKey||(h.scope.includes('仅待核')?'pending':h.scope.includes('仅已确认')?'confirmed':'all');downloadExport(scope,h.format==='csv'?'csv':'xlsx',h.includeSource!==false,h);},
     'help':()=>modal('使用说明',`<div class="guide-list">${[['folder','先建案件，再整理材料','案件之间的数据分开。可从工作台继续案件，或使用左侧案件选择器切换。'],['table','在并表流水中核对','用搜索、渠道和日期金额筛选定位记录。点击一行可查看金额规则与来源位置。'],['alert','异常逐笔确认','金额待核需要明确确认金额与方向；接受余额差异不会改变交易金额。'],['download','导出当前案件结果','支持真实的 XLSX 与 CSV 示例文件。待核金额留空，Excel 中单独列出待核清单。']].map(([i,t,d])=>`<div class="guide-item"><span class="guide-icon">${ico(i,16)}</span><div><b>${t}</b><div>${d}</div></div></div>`).join('')}</div><div class="shortcut-list"><span><kbd>Ctrl K</kbd> 搜索</span><span><kbd>Esc</kbd> 关闭弹窗 / 详情</span></div><div style="border-bottom:1px solid var(--line);padding:3px 0 18px"><label class="form-check"><input id="startup-intro" type="checkbox" ${!window.FUND_INTRO?.shouldSkip()?'checked':''} ${window.FUND_INTRO&&!window.FUND_INTRO.canRemember()?'disabled':''}>打开时显示软件介绍首页</label><div class="field-note">启动偏好保存在当前浏览器。${window.FUND_INTRO&&!window.FUND_INTRO.canRemember()?'当前浏览器无法保存该偏好。':''}</div></div><div class="quiet-note">这是界面交互原型，使用合成数据；刷新后恢复初始状态。文件解析、数据库与正式审计日志将在软件开发阶段接入。</div>`,btn('查看软件介绍','intro','home')+btn('知道了','close-modal',null,'primary'),true)
   };
+  if(desktop){
+    // Keep every demonstration write action unavailable in the production shell.
+    Object.keys(actions).forEach(key=>{actions[key]=()=>{};});
+    Object.assign(actions,{
+      nav:el=>{if(!desktop.busy&&!desktop.saving&&(el.dataset.route==='home'||currentCase()?.available!==false&&currentCase()))navigate(el.dataset.route);},
+      'retry-workspace':()=>loadDesktop(),
+      'choose-workspace':()=>{if(desktop.needsWorkspace){closeModal();loadDesktop(true);}},
+      'new-case':desktopNewCase,'save-case':saveDesktopCase,
+      'open-case':el=>openDesktopCase(el.dataset.id),'choose-case':el=>openDesktopCase(el.dataset.id),
+      'search-case':el=>openDesktopCase(el.dataset.id),'switch-case':desktopSwitchCase,
+      'continue':()=>currentCase()&&openDesktopCase(state.caseId),
+      'close-modal':()=>{if(!desktop.saving&&!desktop.busy)closeModal();},
+      'global-search':globalSearch,'help':desktopHelp,
+      'intro':()=>{if(!desktop.saving&&!desktop.busy){closeModal();window.FUND_INTRO?.show();}}
+    });
+  }
   document.addEventListener('click',event=>{
     if(event.target.matches('input,select,textarea,label')||event.target.closest('label'))return;
-    const el=event.target.closest('[data-action]');if(el&&!el.disabled)actions[el.dataset.action]?.(el);else if(event.target.classList.contains('modal-overlay'))closeModal();
+    const el=event.target.closest('[data-action]');if(el&&!el.disabled)actions[el.dataset.action]?.(el);else if(event.target.classList.contains('modal-overlay')&&(!desktop||!desktop.busy&&!desktop.saving))closeModal();
   });
   function closeInspector(){const id=state.inspected;state.inspected=null;render();$$('tr[data-action="inspect"]').find(el=>el.dataset.id===id)?.focus({preventScroll:true});}
   let composing=false;
@@ -229,21 +366,22 @@
     if(el.name==='export-scope'){state.exportScope=el.value;render();}if(el.name==='export-format'){state.exportFormat=el.value;render();}if(el.id==='export-source'){state.exportSource=el.checked;render();}
     if(el.id==='file-picker'&&el.files.length)handleFiles(Array.from(el.files));
   });
-  function handleFiles(files){const allowed=files.filter(f=>/\.(xlsx?|csv|txt)$/i.test(f.name));if(!allowed.length){toast('请选择 Excel、CSV 或 TXT 文件。');return;}if(allowed.length!==files.length)toast('已跳过不支持的文件类型。');importModal(allowed);}
-  document.addEventListener('dragover',event=>{if(event.target.closest('#drop-zone')){event.preventDefault();$('#drop-zone').classList.add('dragging');}});
+  function handleFiles(files){if(desktop){toast('材料导入尚未接入，未读取或登记文件。');return;}const allowed=files.filter(f=>/\.(xlsx?|csv|txt)$/i.test(f.name));if(!allowed.length){toast('请选择 Excel、CSV 或 TXT 文件。');return;}if(allowed.length!==files.length)toast('已跳过不支持的文件类型。');importModal(allowed);}
+  document.addEventListener('dragover',event=>{if(desktop){event.preventDefault();return;}if(event.target.closest('#drop-zone')){event.preventDefault();$('#drop-zone').classList.add('dragging');}});
   document.addEventListener('dragleave',event=>{if(event.target.closest('#drop-zone'))$('#drop-zone').classList.remove('dragging');});
-  document.addEventListener('drop',event=>{if(event.target.closest('#drop-zone')){event.preventDefault();$('#drop-zone').classList.remove('dragging');handleFiles(Array.from(event.dataTransfer.files));}});
+  document.addEventListener('drop',event=>{if(desktop){event.preventDefault();toast('材料导入尚未接入，未读取或登记文件。');return;}if(event.target.closest('#drop-zone')){event.preventDefault();$('#drop-zone').classList.remove('dragging');handleFiles(Array.from(event.dataTransfer.files));}});
   document.addEventListener('keydown',event=>{
     if(document.body.classList.contains('intro-visible'))return;
     if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();globalSearch();return;}
-    if(event.key==='Escape'){if($('#modal-root').firstChild)closeModal();else if(state.inspected)closeInspector();return;}
+    if(event.key==='Escape'){if(desktop&&(desktop.busy||desktop.saving))return;if($('#modal-root').firstChild)closeModal();else if(state.inspected)closeInspector();return;}
     const dialog=$('.modal');if(dialog&&event.key==='Tab'){const focusable=$$('button:not(:disabled),input,select,textarea,[tabindex="0"]',dialog),first=focusable[0],last=focusable.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus();}return;}
     const row=event.target.closest('tr[data-action]');if(row&&event.target===row&&['Enter',' '].includes(event.key)){event.preventDefault();actions[row.dataset.action]?.(row);}
   });
-  window.addEventListener('hashchange',()=>{const route=location.hash.slice(1);if(labels[route]&&route!==state.route){state.route=route;state.inspected=null;render();}});
+  window.addEventListener('hashchange',()=>{const route=location.hash.slice(1);if(desktop&&(desktop.busy||desktop.saving))return;if(labels[route]&&route!==state.route){state.route=route;state.inspected=null;render();}});
   document.addEventListener('fundsift:enter-workspace',()=>navigate('home'));
   document.addEventListener('fundsift:show-intro',()=>{closeModal();state.inspected=null;renderInspector();$('#toast-root').replaceChildren();});
   document.addEventListener('fundsift:resume-workspace',()=>render());
-  if(labels[location.hash.slice(1)])state.route=location.hash.slice(1);
+  if(!desktop&&labels[location.hash.slice(1)])state.route=location.hash.slice(1);
   render();
+  if(desktop)loadDesktop();
 }());

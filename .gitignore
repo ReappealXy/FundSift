@@ -1,0 +1,11 @@
+node_modules/
+dist/
+artifacts/
+*.log
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+__pycache__/
+samples/
+golden-samples/
