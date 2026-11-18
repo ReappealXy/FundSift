@@ -1,0 +1,310 @@
+{
+  "schema_version": 1,
+  "matrix_version": 2,
+  "cases": [
+    {
+      "id": "amount_a",
+      "title": "A 类：金额符号决定方向",
+      "reference": "docs/02 §4.1、§4.2",
+      "kind": "row",
+      "min_count": 1,
+      "description": "绑定 A 类规则，原始金额为非零带符号十进制文本且无方向字段；其他关键字段完整时，期望 amount 为整数分、正数对应进或负数对应出，状态 confirmed；不得执行方向词表映射。"
+    },
+    {
+      "id": "amount_b",
+      "title": "B 类：方向与冲回符号共同决定方向",
+      "reference": "docs/02 §4.1、§4.2",
+      "kind": "row",
+      "min_count": 1,
+      "description": "绑定已验证的 B 类规则，保留原始金额与原始方向；词表映射先取得原方向，负金额按规则反转，非负金额不反转。其他关键字段完整时，期望标准方向、带符号整数分和 confirmed；不能先取绝对值再沿用原方向。"
+    },
+    {
+      "id": "amount_c",
+      "title": "C 类：方向列表示实际资金方向",
+      "reference": "docs/02 §3.1、§4.1",
+      "kind": "row",
+      "min_count": 1,
+      "description": "绑定有样本证据的 C 类规则，规则声明方向列已表达实际方向、金额只表示大小；依据原始方向词映射和金额绝对值生成标准值，负号不擅自反转。关键字段齐全且证据充分时才期望 confirmed。"
+    },
+    {
+      "id": "amount_d",
+      "title": "D 类：收支双列的正常记录",
+      "reference": "docs/02 §4.1",
+      "kind": "row",
+      "min_count": 1,
+      "description": "保留收入列、支出列原始文本；仅一列为非零正数，另一列为空或零，其他关键字段完整。期望方向由非零列决定、amount 为对应符号整数分、状态 confirmed；不执行方向词表映射。"
+    },
+    {
+      "id": "amount_e",
+      "title": "E 类：无符号金额与方向列",
+      "reference": "docs/02 §4.1",
+      "kind": "row",
+      "min_count": 1,
+      "description": "原始金额为正数文本，原始方向在该格式词表内，绑定 E 类规则；其他关键字段完整时，期望按方向映射生成正或负整数分并 confirmed，禁止把所有正数都当收入。"
+    },
+    {
+      "id": "amount_f",
+      "title": "F 类：已识别文件中的行级金额未知",
+      "reference": "docs/02 §4.1 F 兜底语义",
+      "kind": "row",
+      "min_count": 1,
+      "description": "文件本身可识别，但该行的金额或方向不能由已验证规则判定；保留来源坐标、原始金额和原始方向，期望 status=pending 并有独立原因，不可判定的 amount/direction 为 null，不得以零或猜测方向代替未知。"
+    },
+    {
+      "id": "d_both_nonzero",
+      "title": "D 类：收入支出两列均非零",
+      "reference": "docs/02 §4.1 冲突表第 1 行",
+      "kind": "row",
+      "min_count": 1,
+      "description": "原始收入列与支出列均为非零数值；期望 pending 且列明双列冲突原因，不自动相减、不拆成两笔、不按某列优先；尚无裁决的标准金额及方向为 null。"
+    },
+    {
+      "id": "d_empty_or_zero",
+      "title": "D 类：两列皆空或皆零",
+      "reference": "docs/02 §4.1 冲突表第 2 行",
+      "kind": "row",
+      "min_count": 1,
+      "description": "交易记录存在，原始收入与支出两列均为空或零，无法据列位决定金额方向；期望 pending、有独立原因，direction 不猜测；空金额不能写成零。"
+    },
+    {
+      "id": "d_negative_defined",
+      "title": "D 类：负列值已有验证规则",
+      "reference": "docs/02 §4.1 冲突表第 3 行",
+      "kind": "row",
+      "min_count": 1,
+      "description": "收入或支出原始列出现负数，格式规则明确声明该负值路径且有验证证据；期望标准方向和金额逐项服从声明，关键字段齐全时 confirmed；必须保留负列名、原始负值与判定依据。"
+    },
+    {
+      "id": "d_negative_undefined",
+      "title": "D 类：负列值未定义",
+      "reference": "docs/02 §4.1 冲突表第 3 行",
+      "kind": "row",
+      "min_count": 1,
+      "description": "收入或支出原始列出现负数，规则卡没有已验证的负值处理定义；期望 pending、有负列值语义未定原因，不能默认反转或取绝对值确认，不可判定的标准值为 null。"
+    },
+    {
+      "id": "sign_conflict_defined",
+      "title": "表面符号冲突由规则解释",
+      "reference": "docs/02 §4.1 冲突表第 4 行、§4.2",
+      "kind": "row",
+      "min_count": 1,
+      "description": "原始方向与金额负号形成表面冲突，但绑定规则已明确负号语义，例如 B 类支出加负号为收入冲回；期望按规则产生标准方向与金额，不能因为见负号就一律待核，判定依据须引用对应规则版本。"
+    },
+    {
+      "id": "sign_conflict_undefined",
+      "title": "符号冲突且语义未定义",
+      "reference": "docs/02 §4.1 冲突表第 4 行",
+      "kind": "row",
+      "min_count": 1,
+      "description": "原始方向字段与金额符号无法由所绑定规则解释，或所需信息缺失；期望 pending 并记录符号语义未定原因，不静默沿用方向列或只按正负号确认，不可判定标准值为 null。"
+    },
+    {
+      "id": "zero_defined",
+      "title": "零金额有明确格式语义",
+      "reference": "docs/02 §4.1 冲突表第 5 行",
+      "kind": "row",
+      "min_count": 1,
+      "description": "原始金额确为零，已验证规则卡明确零值的方向和确认策略；期望 amount=0，direction/status 按该规则声明，不把零作为未知金额的替代值；判定依据须说明为何该零值可处理。"
+    },
+    {
+      "id": "zero_undefined",
+      "title": "零金额无已验证规则",
+      "reference": "docs/02 §4.1 冲突表第 5 行",
+      "kind": "row",
+      "min_count": 1,
+      "description": "原始金额确为零但规则未定义零值处理；期望 amount=0、status=pending、零值语义未定原因，不能仅凭数据库允许整数零就 confirmed。"
+    },
+    {
+      "id": "missing_amount",
+      "title": "关键字段缺失：金额",
+      "reference": "docs/02 §4.1 冲突表第 6 行、§4.5",
+      "kind": "row",
+      "min_count": 1,
+      "description": "原始金额字段缺失且没有可用的收入支出列值；期望 amount=null、status=pending、金额缺失原因，并计为无法量化记录；不得写成 amount=0。"
+    },
+    {
+      "id": "missing_time",
+      "title": "关键字段缺失：交易时间",
+      "reference": "docs/02 §4.1 冲突表第 6 行、§4.5；docs/03 §6.3",
+      "kind": "row",
+      "min_count": 1,
+      "description": "原始交易时间缺失，期望 txn_time=null、status=pending、有时间缺失原因；即使金额和方向已可靠确认，仍保留这些标准值且整行继续 pending，不借建案时间填交易时间。"
+    },
+    {
+      "id": "missing_account",
+      "title": "关键字段缺失：账户",
+      "reference": "docs/02 §4.1 冲突表第 6 行、§4.5",
+      "kind": "row",
+      "min_count": 1,
+      "description": "记录与已确认文件级信息都无法取得所属账户；期望 acct_no=null、status=pending、有账户缺失原因，不由对方账户、文件名或默认值猜测本方账户。"
+    },
+    {
+      "id": "unknown_direction",
+      "title": "方向词不在格式词表",
+      "reference": "docs/02 §4.1 冲突表第 7 行",
+      "kind": "row",
+      "min_count": 1,
+      "description": "依赖方向字段的 B/C/E 类中，原始方向词未被该格式词表收录；期望 direction=null、status=pending、有词表外原因，保留原始方向，不用其他格式的公共词表静默补判。"
+    },
+    {
+      "id": "reversal_b",
+      "title": "B 类负金额冲回",
+      "reference": "docs/02 §2、§4.1、§4.2",
+      "kind": "row",
+      "min_count": 1,
+      "description": "原始支出方向及负金额按已验证 B 类规则反转为实际流入，或原始收入加负金额反转为实际流出；期望标准符号、方向与冲回后的实际方向一致，保留原始负数与依据，不仅依靠摘要中的冲正文字。"
+    },
+    {
+      "id": "reversal_memo_only",
+      "title": "摘要提及冲正但不作为改向依据",
+      "reference": "docs/02 §6 冲正关联待验证项",
+      "kind": "row",
+      "min_count": 1,
+      "description": "原始摘要出现冲正或退款词，但金额与方向仍必须按格式规则判定；期望不因摘要文字本身自动反转，也不自行匹配或抵消另一条交易；保留原始摘要及独立判定依据。"
+    },
+    {
+      "id": "rounding_yuan",
+      "title": "元换算到分需要舍入",
+      "reference": "docs/02 §4.3",
+      "kind": "row",
+      "min_count": 1,
+      "description": "source_unit=元、unit_scale=100，原始十进制金额换算后有不足一分的尾数；期望按 ROUND_HALF_UP 得到整数分，保留原文本及舍入依据或差额证据，不先转换二进制浮点。"
+    },
+    {
+      "id": "source_fen",
+      "title": "来源单位为分",
+      "reference": "docs/02 §3.1、§4.3",
+      "kind": "row",
+      "min_count": 1,
+      "description": "规则明确 source_unit=分、unit_scale=1，原始金额为整数分文本；期望标准分值不乘一百、不除一百，标准方向仍按绑定类别处理，显示层元金额不能混作源值。"
+    },
+    {
+      "id": "balance_scope_asset_ledger",
+      "title": "资产账面余额的可比记录",
+      "reference": "docs/02 §4.5",
+      "kind": "row",
+      "min_count": 1,
+      "description": "balance_scope=asset_ledger，规则确认 amount 与余额增减同向；前项、本项同账户同币种，链段完整且顺序稳定、标准金额已可靠。期望依据前余额加本笔金额核对本余额并给出 pass 或 fail 及差额证据。"
+    },
+    {
+      "id": "balance_scope_debt",
+      "title": "欠款余额不套资产公式",
+      "reference": "docs/02 §4.5",
+      "kind": "row",
+      "min_count": 1,
+      "description": "原始余额经规则确认是欠款口径，期望 balance_scope=debt、余额检查 na 或 unchecked 并说明口径不适用，不套前余额加资金金额公式，不反向修改可靠金额或方向。"
+    },
+    {
+      "id": "balance_scope_available",
+      "title": "可用余额不套资产公式",
+      "reference": "docs/02 §4.5",
+      "kind": "row",
+      "min_count": 1,
+      "description": "原始余额经规则确认是可用余额，期望 balance_scope=available、余额检查 na 或 unchecked 并有原因，不能与资产账面余额混接后宣告 pass/fail。"
+    },
+    {
+      "id": "balance_scope_unknown",
+      "title": "余额口径未知",
+      "reference": "docs/02 §4.5",
+      "kind": "row",
+      "min_count": 1,
+      "description": "格式规则或来源证据没有声明余额口径；期望 balance_scope=unknown、余额检查 na 或 unchecked 并注明口径待核，不默认 asset_ledger，金额确认状态独立保存。"
+    },
+    {
+      "id": "balance_fail_confirmed",
+      "title": "金额确认与余额异常分离",
+      "reference": "docs/02 §4.5 状态边界表第 1 行",
+      "kind": "row",
+      "min_count": 1,
+      "description": "标准金额、方向和关键字段可靠，且可比资产余额链出现非零差额；期望 fund_flow.status=confirmed、余额检查 fail、差额有证据，不为凑平余额改向或改金额，也不把余额异常自动改为记录阻断原因。"
+    },
+    {
+      "id": "pending_not_pass",
+      "title": "金额未知不能判余额通过",
+      "reference": "docs/02 §4.5 状态边界表第 2 行",
+      "kind": "row",
+      "min_count": 1,
+      "description": "金额或实际方向尚不能确定，期望记录 pending、有对应独立原因，余额检查不是 pass；不得把未知金额写成零后计算出通过，也不得用余额差额倒推后自动确认金额。"
+    },
+    {
+      "id": "balance_no_previous",
+      "title": "没有可用前项",
+      "reference": "docs/02 §4.5 状态边界表第 4 行",
+      "kind": "row",
+      "min_count": 1,
+      "description": "本项可以具有可靠金额和余额，但没有可用前项；期望余额检查 unchecked 或 na、有无前项原因，不把零作为前余额、不擅自判 pass，金额状态保持独立。"
+    },
+    {
+      "id": "same_second_stable",
+      "title": "同秒多笔有稳定次序",
+      "reference": "docs/02 §4.5 适用前提；§5.1",
+      "kind": "row",
+      "min_count": 1,
+      "description": "至少两笔同账户同币种记录的原始时间在同一秒，存在有依据的稳定次序键和可引用前项；余额可比性必须按该次序确认，来源坐标保留每一笔，不按同秒去重。"
+    },
+    {
+      "id": "same_second_unstable",
+      "title": "同秒多笔顺序未定",
+      "reference": "docs/02 §4.5 适用前提与状态边界表第 4 行",
+      "kind": "row",
+      "min_count": 1,
+      "description": "原始时间同秒且没有足以确定业务次序的依据；期望余额检查 unchecked 或 na、有顺序未定原因，不通过文件名、随机 ID 或凑平余额猜测先后，可靠金额不因此自动改向。"
+    },
+    {
+      "id": "incomplete_segment",
+      "title": "余额链段不完整",
+      "reference": "docs/02 §4.5 适用前提与状态边界表第 4 行",
+      "kind": "row",
+      "min_count": 1,
+      "description": "来源证据表明链段有缺口、截取或连续完整性未获确认；即使相邻可见记录表面相减可平，期望余额检查 unchecked 或 na、有不完整原因，不宣告可比通过。"
+    },
+    {
+      "id": "unknown_format_file",
+      "title": "整体格式未知不得伪造行答案",
+      "reference": "docs/02 §4.1 F 兜底语义；docs/04 Q06",
+      "kind": "file",
+      "min_count": 1,
+      "description": "文件结构与已验证规则均不能匹配；文件级期望为待识别或待确认、不发布解析结果，记录文件身份与未识别依据，不虚构逐笔 fund_flow 行。与已识别文件中的行级 pending 分开核对。"
+    },
+    {
+      "id": "currency_foreign",
+      "title": "已知外币不混入人民币合计",
+      "reference": "docs/02 §1 首版币种边界；docs/04 Q08",
+      "kind": "row",
+      "min_count": 1,
+      "description": "原始币种字段含可核对的非 CNY 三字母代码，比较时仅忽略首尾空格和大小写，原文仍保留；期望保留实际币种、显式提示不支持或不纳入人民币合计，不能默认 CNY 或把外币金额混入人民币汇总；文件与行的发布处置仍依待确认的 Q06 策略，不由本矩阵另定。"
+    },
+    {
+      "id": "currency_missing_verified",
+      "title": "缺币种由已验证格式声明确认",
+      "reference": "docs/02 §1 首版币种边界；docs/04 Q08",
+      "kind": "row",
+      "min_count": 1,
+      "description": "原始行无币种字段，但绑定的已验证格式声明已确认仅为 CNY且有证据；期望 currency=CNY 并引用该声明，其他关键字段完整时可 confirmed，不能只凭数据库默认值确认。"
+    },
+    {
+      "id": "currency_missing_unknown",
+      "title": "缺币种且格式无验证声明",
+      "reference": "docs/02 §1 首版币种边界；docs/04 Q08",
+      "kind": "row",
+      "min_count": 1,
+      "description": "原始币种缺失且格式没有已验证的币种声明；期望 currency=null、status=pending、有币种未确认原因，不默认 CNY，不进入人民币已确认金额合计。"
+    },
+    {
+      "id": "time_timezone_marker",
+      "title": "原始时间带时区或 UTC 标记",
+      "reference": "docs/03 §6.3 时间口径",
+      "kind": "row",
+      "min_count": 1,
+      "description": "原始 txn_time_text 含 ISO 时区偏移、Z 后缀或明确的 UTC/GMT 标记，例如 2026-03-01T10:00:00+08:00；第一片不能按本地无时区时间直接解释。原文完整保留，期望 txn_time=null、status=pending，并有含 time 或 timezone 的独立待核原因；不静默转换为本地时间，也不借缺时间标签代替该见证。"
+    },
+    {
+      "id": "amount_unparseable",
+      "title": "金额原文非空但无法按十进制解析",
+      "reference": "docs/02 §4.1 行级异常兜底、§4.3 精确十进制解析",
+      "kind": "row",
+      "min_count": 1,
+      "description": "原始金额文本非空，但不符合本版可核对的十进制金额格式，例如 N/A、—、全角数字；单金额类别检查 raw_amount_text，D 类检查实际收入/支出列，任一非空列无法解析即不能借另一列猜测金额。原文完整保留，不自动规范化全角字符、不转成零；期望 amount=null、status=pending，并有含 amount 或 format 的独立待核原因。该项与原文为空的 missing_amount 分开计数。"
+    }
+  ]
+}

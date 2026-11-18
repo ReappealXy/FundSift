@@ -8,7 +8,8 @@
   "scripts": {
     "start": "electron .",
     "postinstall": "electron-builder install-app-deps",
-    "test": "node scripts/check.cjs",
+    "test": "node scripts/check.cjs && node --test scripts/g0/checks/validator.test.cjs",
+    "test:g0": "node --test scripts/g0/checks/validator.test.cjs",
     "test:storage": "node scripts/run-electron-node.cjs --test code/desktop/checks/storage.check.cjs",
     "smoke": "node scripts/smoke.cjs",
     "build:dir": "electron-builder --win --x64 --dir",
@@ -18,6 +19,7 @@
     "better-sqlite3": "12.11.1"
   },
   "devDependencies": {
+    "ajv": "8.20.0",
     "electron": "42.11.18",
     "electron-builder": "26.18.0",
     "jsdom": "27.4.0"

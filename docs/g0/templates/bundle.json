@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "matrix_version": 2,
+  "dataset_id": "replace-with-local-dataset-id",
+  "dataset_version": 1,
+  "state": "draft",
+  "generator": {
+    "name": "not-implemented",
+    "version": "not-implemented",
+    "implementation_path": null,
+    "sha256": null,
+    "independence": "A层生成器尚未实现；将独立于被测解析器和金额引擎。"
+  },
+  "answers_file": "answers.jsonl",
+  "answers_sha256": null,
+  "schema_sha256": null,
+  "matrix_sha256": null,
+  "sources": [],
+  "rules": [],
+  "questions": []
+}
