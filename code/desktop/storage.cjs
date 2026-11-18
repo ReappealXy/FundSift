@@ -1,12 +1,15 @@
 'use strict';
 
-// This module is synchronous by design. Only the utility process may load it.
+// SQLite statements stay synchronous in the utility process; upgrades await verified backups.
 const fs = require('node:fs');
 const path = require('node:path');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, createHash } = require('node:crypto');
 const Database = require('better-sqlite3');
+const { migrate, schemaSignature, assertKnownSchema } = require('./migrations.cjs');
+const { installCaseV2, validateCaseV1, readSummary } = require('./hardening.cjs');
 
-const SCHEMA_VERSION = 1;
+const WORKSPACE_SCHEMA_VERSION = 2;
+const CASE_SCHEMA_VERSION = 2;
 const WORKSPACE_APP_ID = 0x46535753;
 const CASE_APP_ID = 0x46534341;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -22,6 +25,55 @@ const CATALOG_SCHEMA = `
     last_opened_at TEXT
   );
 `;
+const CATALOG_V2_SQL = 'CREATE UNIQUE INDEX idx_workspace_case_number_nocase ON workspace_case(case_no COLLATE NOCASE)';
+const BASE_SCHEMA = fs.readFileSync(path.resolve(__dirname, '../ddl_extract_check.sql'), 'utf8');
+const signatureCache = new Map();
+
+function knownSignature(kind, version) {
+  const key = `${kind}:${version}`;
+  if (signatureCache.has(key)) return signatureCache.get(key);
+  const sample = new Database(':memory:');
+  try {
+    if (kind === 'workspace') {
+      sample.exec(CATALOG_SCHEMA);
+      if (version === 2) sample.exec(CATALOG_V2_SQL);
+    } else {
+      sample.exec(BASE_SCHEMA);
+      sample.exec('CREATE TABLE desktop_case_identity (id INTEGER PRIMARY KEY CHECK (id = 1), case_uuid TEXT NOT NULL UNIQUE)');
+      if (version === 2) {
+        const record = { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', case_no: 'schema', case_name: 'schema', created_at: 'schema', updated_at: 'schema' };
+        sample.prepare('INSERT INTO case_info(id,case_no,case_name,created_at) VALUES(1,?,?,?)').run(record.case_no, record.case_name, record.created_at);
+        sample.prepare('INSERT INTO desktop_case_identity(id,case_uuid) VALUES(1,?)').run(record.id);
+        sample.transaction(() => installCaseV2(sample, record))();
+      }
+    }
+    const signature = schemaSignature(sample);
+    signatureCache.set(key, signature);
+    return signature;
+  } finally { sample.close(); }
+}
+
+function assertCaseIdentity(db, record) {
+  const identities = db.prepare('SELECT id, case_no, case_name, created_at FROM case_info').all();
+  const uuid = db.prepare('SELECT id,case_uuid FROM desktop_case_identity').all();
+  if (identities.length !== 1 || identities[0].id !== 1 || identities[0].case_no !== record.case_no ||
+      identities[0].case_name !== record.case_name || identities[0].created_at !== record.created_at ||
+      uuid.length !== 1 || uuid[0].id !== 1 || uuid[0].case_uuid !== record.id) {
+    throw failure('FS_CASE_IDENTITY', '案件数据库与登记身份不符，已停止打开。');
+  }
+}
+
+function validateCatalog(db) {
+  const duplicate = db.prepare('SELECT group_concat(case_no) AS numbers FROM workspace_case GROUP BY case_no COLLATE NOCASE HAVING count(*) > 1 LIMIT 1').get();
+  if (duplicate) throw failure('FS_CASE_NUMBER_CONFLICT', `旧工作区存在仅字母大小写不同的重复编号：${duplicate.numbers}。已停止升级，未改名或合并案件。`);
+  for (const record of db.prepare('SELECT * FROM workspace_case').all()) {
+    const input = validateInput({ name: record.case_name, number: record.case_no });
+    if (!UUID.test(record.id) || record.relative_path !== path.posix.join('cases', record.id, 'case.sqlite') ||
+        input.name !== record.case_name || input.number !== record.case_no || !record.created_at || !record.updated_at) {
+      throw failure('FS_WORKSPACE_IDENTITY', '旧工作区登记的案件身份或路径不完整，已停止升级。');
+    }
+  }
+}
 
 function failure(code, message, cause) {
   const error = new Error(message, cause ? { cause } : undefined);
@@ -48,6 +100,95 @@ function isDirectory(filePath) {
   }
 }
 
+function hasPath(filePath) {
+  try { fs.lstatSync(filePath); return true; } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
+    throw error;
+  }
+}
+
+// Read the SQLite header directly: opening a WAL database just to inspect a
+// folder can create sidecar files. Folder validation itself must never write.
+function isWorkspaceIndex(filePath) {
+  let descriptor;
+  try {
+    const stat = fs.lstatSync(filePath);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 100) return false;
+    descriptor = fs.openSync(filePath, 'r');
+    const header = Buffer.alloc(100);
+    if (fs.readSync(descriptor, header, 0, 100, 0) !== 100 ||
+        !header.subarray(0, 16).equals(Buffer.from('SQLite format 3\0'))) return false;
+    if (header.readUInt32BE(68) === WORKSPACE_APP_ID) return true;
+    return hasWorkspaceWalHeader(filePath + '-wal');
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
+    throw error;
+  } finally { if (descriptor !== undefined) fs.closeSync(descriptor); }
+}
+
+function hasWorkspaceWalHeader(walPath) {
+  let descriptor;
+  try {
+    const stat = fs.lstatSync(walPath);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 32) return false;
+    descriptor = fs.openSync(walPath, 'r');
+    const header = Buffer.alloc(32);
+    if (fs.readSync(descriptor, header, 0, 32, 0) !== 32 ||
+        ![0x377f0682, 0x377f0683].includes(header.readUInt32BE(0))) return false;
+    const pageSize = header.readUInt32BE(8);
+    if (pageSize < 512 || pageSize > 65536 || (pageSize & (pageSize - 1))) return false;
+    const frameSize = pageSize + 24, frame = Buffer.alloc(24), pageHeader = Buffer.alloc(100);
+    let committed = false;
+    for (let offset = 32 + (Math.floor((stat.size - 32) / frameSize) - 1) * frameSize; offset >= 32; offset -= frameSize) {
+      if (fs.readSync(descriptor, frame, 0, 24, offset) !== 24 ||
+          frame.readUInt32BE(8) !== header.readUInt32BE(16) || frame.readUInt32BE(12) !== header.readUInt32BE(20)) continue;
+      if (frame.readUInt32BE(4) !== 0) committed = true;
+      if (committed && frame.readUInt32BE(0) === 1) {
+        return fs.readSync(descriptor, pageHeader, 0, 100, offset + 24) === 100 &&
+          pageHeader.subarray(0, 16).equals(Buffer.from('SQLite format 3\0')) && pageHeader.readUInt32BE(68) === WORKSPACE_APP_ID;
+      }
+    }
+    return false;
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
+    throw error;
+  } finally { if (descriptor !== undefined) fs.closeSync(descriptor); }
+}
+
+function hasCreationJournal(directory) {
+  const markerPath = path.join(directory, MARKER);
+  try {
+    const stat = fs.lstatSync(markerPath);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 65536) return false;
+    const record = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+    return record.version === 1 && UUID.test(record.id) && record.id === path.basename(directory) &&
+      record.relative_path === path.posix.join('cases', record.id, 'case.sqlite');
+  } catch (error) {
+    if (error instanceof SyntaxError || error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
+    throw error;
+  }
+}
+
+function isCasesContainer(directory) {
+  if (path.basename(directory).toLowerCase() !== 'cases' || !isDirectory(directory)) return false;
+  if (isWorkspaceIndex(path.join(path.dirname(directory), 'workspace.sqlite'))) return true;
+  // Also protect a recognizable cases tree whose workspace index was lost.
+  return fs.readdirSync(directory, { withFileTypes: true }).some(entry => entry.isDirectory() && UUID.test(entry.name) &&
+    (hasPath(path.join(directory, entry.name, 'case.sqlite')) || hasCreationJournal(path.join(directory, entry.name))));
+}
+
+function assertWorkspaceLocation(rootPath) {
+  let current = path.resolve(rootPath);
+  for (;;) {
+    if (hasPath(path.join(current, 'case.sqlite')) || hasCreationJournal(current) || isCasesContainer(current)) {
+      throw failure('FS_WORKSPACE_INNER_FOLDER', '这个文件夹属于软件内部的案件数据。请选择保存全部案件的数据存放文件夹，不要选择 cases、单个案件或其内部文件夹。');
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+}
+
 function assertRegularFile(filePath, missingCode, missingMessage) {
   let stat;
   try { stat = fs.lstatSync(filePath); } catch (error) {
@@ -70,31 +211,65 @@ function validateInput(input) {
 }
 
 class WorkspaceStore {
-  constructor({ schemaPath }) {
+  constructor({ schemaPath, migrationHooks = {}, onProgress = () => {} }) {
     this.schemaPath = path.resolve(schemaPath);
+    this.migrationHooks = migrationHooks;
+    // Progress observers must never affect the success/rollback of storage.
+    this.onProgress = phase => { try { onProgress(phase); } catch (_) {} };
     this.workspacePath = null;
     this.catalog = null;
     this.caseDb = null;
     this.currentCaseId = null;
   }
 
-  openWorkspace(rootPath, { allowCreate = true } = {}) {
+  inspectWorkspace(rootPath) {
+    this.onProgress('checking');
+    if (typeof rootPath !== 'string' || !path.isAbsolute(rootPath)) throw failure('FS_WORKSPACE_PATH', '请选择完整的数据存放文件夹路径。');
+    const resolved = path.resolve(rootPath);
+    assertWorkspaceLocation(resolved);
+    if (!fs.existsSync(resolved)) return { exists: false, hasWorkspace: false, needsConfirmation: false, entries: [], confirmationToken: null };
+    if (!isDirectory(resolved)) throw failure('FS_WORKSPACE_PATH', '选择的位置不是普通文件夹。');
+    const names = fs.readdirSync(resolved).sort();
+    const entries = names.map(name => {
+      const stat = fs.lstatSync(path.join(resolved, name));
+      return { name, kind: stat.isDirectory() ? 'directory' : stat.isFile() ? 'file' : 'other', size: stat.size, modified: stat.mtimeMs };
+    });
+    const hasWorkspace = names.includes('workspace.sqlite');
+    return { exists: true, hasWorkspace, needsConfirmation: !hasWorkspace && names.length > 0, entries: names,
+      confirmationToken: createHash('sha256').update(JSON.stringify({ root: fs.realpathSync(resolved), entries })).digest('hex') };
+  }
+
+  async openWorkspace(rootPath, { allowCreate = true, confirmationToken } = {}) {
     if (typeof rootPath !== 'string' || !path.isAbsolute(rootPath)) {
-      throw failure('FS_WORKSPACE_PATH', '请选择一个完整的数据目录路径。');
+      throw failure('FS_WORKSPACE_PATH', '请选择完整的数据存放文件夹路径。');
     }
     const resolved = path.resolve(rootPath);
     let nextCatalog;
     try {
+      const inspection = this.inspectWorkspace(resolved);
+      const existingCases = path.join(resolved, 'cases');
+      if (inspection.exists && fs.existsSync(existingCases) && !isDirectory(existingCases)) {
+        throw failure('FS_UNSAFE_PATH', '数据存放文件夹中的 cases 位置已被其他文件占用。');
+      }
+      if (!inspection.hasWorkspace && isDirectory(existingCases) && fs.readdirSync(existingCases).length) {
+        throw failure('FS_WORKSPACE_INDEX_MISSING', '该目录已有案件，但工作区索引已失联；不会建立空索引替代。');
+      }
+      if (allowCreate && inspection.needsConfirmation && confirmationToken !== inspection.confirmationToken) {
+        throw failure('FS_WORKSPACE_CONFIRM', '所选文件夹已有文件，请确认允许在这里保存案件；内容若已变化，请重新选择并确认。');
+      }
+      // Recheck after inspection/confirmation and immediately before the first
+      // write, including when a previously absent target gained a case tree.
+      assertWorkspaceLocation(resolved);
       // Only an explicit first-time folder choice may create a workspace.
       if (allowCreate) fs.mkdirSync(resolved, { recursive: true });
       else if (!fs.existsSync(resolved)) {
-        throw failure('FS_WORKSPACE_MISSING', '已保存的数据目录已失联，请恢复原目录后重试；不会建立空工作区替代。');
+        throw failure('FS_WORKSPACE_MISSING', '暂时无法访问原数据存放位置，请恢复原文件夹后重试；不会建立空数据替代。');
       }
-      if (!isDirectory(resolved)) throw failure('FS_WORKSPACE_PATH', '选择的位置不是普通目录。');
+      if (!isDirectory(resolved)) throw failure('FS_WORKSPACE_PATH', '选择的位置不是普通文件夹。');
       const rootReal = fs.realpathSync(resolved);
       const casesPath = path.join(rootReal, 'cases');
       if (fs.existsSync(casesPath) && !isDirectory(casesPath)) {
-        throw failure('FS_UNSAFE_PATH', '数据目录中的 cases 位置已被其他文件占用。');
+        throw failure('FS_UNSAFE_PATH', '数据存放文件夹中的 cases 位置已被其他文件占用。');
       }
       const catalogPath = path.join(rootReal, 'workspace.sqlite');
       const exists = fs.existsSync(catalogPath);
@@ -106,11 +281,11 @@ class WorkspaceStore {
       }
       if (exists) assertRegularFile(catalogPath, 'FS_WORKSPACE_MISSING', '工作区索引已失联。');
       if (!allowCreate && !isDirectory(casesPath)) {
-        throw failure('FS_WORKSPACE_CASES_MISSING', '案件数据目录已失联，请恢复原目录后重试。');
+        throw failure('FS_WORKSPACE_CASES_MISSING', '案件数据文件夹已失联，请恢复原保存位置后重试。');
       }
       if (this.catalog && this.workspacePath === rootReal) {
         // Refresh without closing the active case connection or resetting its identity.
-        const cases = this.listCases();
+        const cases = await this.listCases();
         if (this.currentCaseId && !cases.some(item => item.id === this.currentCaseId && item.available)) {
           if (this.caseDb) this.caseDb.close();
           this.caseDb = null;
@@ -120,32 +295,39 @@ class WorkspaceStore {
       }
       nextCatalog = new Database(catalogPath, { fileMustExist: exists });
       if (exists) {
-        if (nextCatalog.pragma('user_version', { simple: true }) !== SCHEMA_VERSION ||
-            nextCatalog.pragma('application_id', { simple: true }) !== WORKSPACE_APP_ID) {
+        const version = nextCatalog.pragma('user_version', { simple: true });
+        if (![1, WORKSPACE_SCHEMA_VERSION].includes(version) || nextCatalog.pragma('application_id', { simple: true }) !== WORKSPACE_APP_ID) {
           throw failure('FS_WORKSPACE_VERSION', '该工作区版本尚不支持，请选择兼容的数据目录，不能直接覆盖。');
         }
-        nextCatalog.prepare('SELECT id, case_no, case_name, relative_path, created_at, updated_at, last_opened_at FROM workspace_case LIMIT 1').all();
+        assertKnownSchema(nextCatalog, knownSignature('workspace', version), '工作区');
+        if (version === 1) {
+          configure(nextCatalog);
+          await migrate({ db: nextCatalog, filePath: catalogPath, kind: '工作区', identity: { workspacePath: rootReal },
+            expectedSchema: knownSignature('workspace', 1), validate: validateCatalog,
+            install: database => database.exec(CATALOG_V2_SQL), hooks: this.migrationHooks, onProgress: this.onProgress });
+        }
       } else {
         configure(nextCatalog);
         nextCatalog.transaction(() => {
           nextCatalog.exec(CATALOG_SCHEMA);
+          nextCatalog.exec(CATALOG_V2_SQL);
           nextCatalog.pragma(`application_id = ${WORKSPACE_APP_ID}`);
-          nextCatalog.pragma(`user_version = ${SCHEMA_VERSION}`);
+          nextCatalog.pragma(`user_version = ${WORKSPACE_SCHEMA_VERSION}`);
         })();
       }
       configure(nextCatalog);
       if (allowCreate) fs.mkdirSync(casesPath, { recursive: true });
       if (!isDirectory(casesPath) || fs.realpathSync(casesPath) !== casesPath) {
-        throw failure('FS_UNSAFE_PATH', '案件目录不能指向其他位置。');
+        throw failure('FS_UNSAFE_PATH', '案件文件夹不能指向其他位置。');
       }
       // Fully validate the candidate before releasing a previously usable workspace.
-      const candidate = new WorkspaceStore({ schemaPath: this.schemaPath });
+      const candidate = new WorkspaceStore({ schemaPath: this.schemaPath, migrationHooks: this.migrationHooks, onProgress: this.onProgress });
       candidate.workspacePath = rootReal;
       candidate.catalog = nextCatalog;
-      candidate._recoverCreations();
-      const cases = candidate.listCases();
+      await candidate._recoverCreations();
+      const cases = await candidate.listCases();
       const last = cases.find(item => item.available && item.openedAt);
-      if (last) candidate.openCase(last.id);
+      if (last) await candidate.openCase(last.id);
       this.close();
       this.workspacePath = rootReal;
       this.catalog = nextCatalog;
@@ -155,12 +337,12 @@ class WorkspaceStore {
       return { workspacePath: this.workspacePath, cases, currentCaseId: this.currentCaseId };
     } catch (error) {
       if (nextCatalog) nextCatalog.close();
-      throw wrap(error, 'FS_WORKSPACE_OPEN', '数据目录无法打开，请检查位置、权限和剩余空间。');
+      throw wrap(error, 'FS_WORKSPACE_OPEN', '数据存放文件夹无法打开，请检查位置、访问权限和剩余空间。');
     }
   }
 
   _assertOpen() {
-    if (!this.catalog) throw failure('FS_WORKSPACE_REQUIRED', '请先选择数据目录。');
+    if (!this.catalog) throw failure('FS_WORKSPACE_REQUIRED', '请先选择数据存放文件夹。');
   }
 
   _casePath(id) {
@@ -176,29 +358,32 @@ class WorkspaceStore {
     return record;
   }
 
-  _openCaseDatabase(record) {
+  async _openCaseDatabase(record) {
+    this.onProgress('checking');
     const directory = this._casePath(record.id);
     const expected = path.posix.join('cases', record.id, 'case.sqlite');
     if (record.relative_path !== expected) throw failure('FS_CASE_IDENTITY', '案件索引路径与身份不符，已停止打开。');
-    if (!isDirectory(directory)) throw failure('FS_CASE_MISSING', '案件目录已失联，请恢复原数据目录后重试。');
+    if (!isDirectory(directory)) throw failure('FS_CASE_MISSING', '案件文件夹已失联，请恢复原数据存放位置后重试。');
     if (fs.realpathSync(directory) !== directory || fs.realpathSync(path.dirname(directory)) !== path.dirname(directory)) {
-      throw failure('FS_UNSAFE_PATH', '案件目录不能指向其他位置。');
+      throw failure('FS_UNSAFE_PATH', '案件文件夹不能指向其他位置。');
     }
     const filePath = path.join(directory, 'case.sqlite');
     assertRegularFile(filePath, 'FS_CASE_MISSING', '案件数据库已失联，不会自动创建空库替代。');
     let db;
     try {
       db = new Database(filePath, { fileMustExist: true });
-      if (db.pragma('user_version', { simple: true }) !== SCHEMA_VERSION ||
-          db.pragma('application_id', { simple: true }) !== CASE_APP_ID) {
+      const version = db.pragma('user_version', { simple: true });
+      if (![1, CASE_SCHEMA_VERSION].includes(version) || db.pragma('application_id', { simple: true }) !== CASE_APP_ID) {
         throw failure('FS_CASE_VERSION', '该案件数据库版本尚不支持，不能直接覆盖或升级。');
       }
-      const identities = db.prepare('SELECT id, case_no, case_name, created_at FROM case_info').all();
-      const desktopIdentity = db.prepare('SELECT case_uuid FROM desktop_case_identity WHERE id = 1').get();
-      if (identities.length !== 1 || identities[0].id !== 1 || identities[0].case_no !== record.case_no ||
-          identities[0].case_name !== record.case_name || identities[0].created_at !== record.created_at ||
-          !desktopIdentity || desktopIdentity.case_uuid !== record.id) {
-        throw failure('FS_CASE_IDENTITY', '案件数据库与登记身份不符，已停止打开。');
+      assertKnownSchema(db, knownSignature('case', version), '案件数据库');
+      assertCaseIdentity(db, record);
+      if (version === 1) {
+        configure(db);
+        await migrate({ db, filePath, kind: '案件', identity: { caseUuid: record.id, caseNumber: record.case_no, caseName: record.case_name },
+          expectedSchema: knownSignature('case', 1),
+          validate: database => { assertCaseIdentity(database, record); validateCaseV1(database, record); },
+          install: database => installCaseV2(database, record), hooks: this.migrationHooks, onProgress: this.onProgress });
       }
       configure(db);
       return db;
@@ -208,45 +393,38 @@ class WorkspaceStore {
     }
   }
 
-  _dto(record, db) {
-    const stats = {
-      files: db.prepare('SELECT count(*) AS n FROM source_file WHERE case_id = 1').get().n,
-      ...db.prepare(`SELECT count(*) AS flows,
-          coalesce(sum(CASE WHEN f.status = 'pending' THEN 1 ELSE 0 END), 0) AS pending
-        FROM fund_flow f
-        JOIN source_file s ON s.id = f.source_file_id AND s.case_id = f.case_id
-        JOIN import_batch b ON b.id = s.current_batch_id AND b.id = f.batch_id
-          AND b.source_file_id = s.id AND b.case_id = f.case_id AND b.status = 'done'
-        WHERE f.case_id = 1`).get()
-    };
+  _dto(record, db, diagnostics = false) {
+    const summary = readSummary(db, record, { diagnostics });
     return { id: record.id, name: record.case_name, number: record.case_no,
-      createdAt: record.created_at, updatedAt: record.updated_at,
-      openedAt: record.last_opened_at || null, available: true, error: null, stats };
+      createdAt: record.created_at, updatedAt: summary.updatedAt,
+      openedAt: record.last_opened_at || null, available: true, error: null, ...summary };
   }
 
-  listCases() {
+  async listCases() {
     this._assertOpen();
     try {
-      return this.catalog.prepare('SELECT * FROM workspace_case ORDER BY last_opened_at DESC, updated_at DESC, id').all().map(record => {
+      const result = [];
+      for (const record of this.catalog.prepare('SELECT * FROM workspace_case ORDER BY last_opened_at DESC, updated_at DESC, id').all()) {
         let db;
         try {
-          db = this._openCaseDatabase(record);
-          return this._dto(record, db);
+          db = await this._openCaseDatabase(record);
+          result.push(this._dto(record, db));
         } catch (error) {
           const known = wrap(error, 'FS_CASE_OPEN', '案件暂时不可读取。');
-          return { id: record.id, name: record.case_name, number: record.case_no,
+          result.push({ id: record.id, name: record.case_name, number: record.case_no,
             createdAt: record.created_at, updatedAt: record.updated_at,
             openedAt: record.last_opened_at || null, available: false,
-            error: { code: known.code, message: known.message }, stats: null };
+            error: { code: known.code, message: known.message }, stats: null });
         } finally { if (db) db.close(); }
-      });
-    } catch (error) { throw wrap(error, 'FS_CASE_LIST', '案件列表读取失败，请检查数据目录。'); }
+      }
+      return result;
+    } catch (error) { throw wrap(error, 'FS_CASE_LIST', '案件列表读取失败，请检查数据存放文件夹。'); }
   }
 
-  createCase(input) {
+  async createCase(input) {
     this._assertOpen();
     const { name, number } = validateInput(input);
-    if (this.catalog.prepare('SELECT 1 FROM workspace_case WHERE case_no = ?').get(number)) {
+    if (this.catalog.prepare('SELECT 1 FROM workspace_case WHERE case_no = ? COLLATE NOCASE').get(number)) {
       throw failure('FS_CASE_DUPLICATE', '此案件编号已存在，请使用其他编号。');
     }
     const id = randomUUID();
@@ -271,7 +449,8 @@ class WorkspaceStore {
         db.exec('CREATE TABLE desktop_case_identity (id INTEGER PRIMARY KEY CHECK (id = 1), case_uuid TEXT NOT NULL UNIQUE)');
         db.prepare('INSERT INTO desktop_case_identity (id,case_uuid) VALUES (1,?)').run(id);
         db.pragma(`application_id = ${CASE_APP_ID}`);
-        db.pragma(`user_version = ${SCHEMA_VERSION}`);
+        installCaseV2(db, record);
+        db.pragma(`user_version = ${CASE_SCHEMA_VERSION}`);
       })();
       db.close(); db = null;
       this.catalog.transaction(() => this.catalog.prepare(`INSERT INTO workspace_case
@@ -288,11 +467,11 @@ class WorkspaceStore {
         try { fs.rmSync(directory, { recursive: true }); } catch (_) { /* Marker permits recovery. */ }
       }
       if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') throw failure('FS_CASE_DUPLICATE', '此案件编号已存在，请使用其他编号。', error);
-      throw wrap(error, 'FS_CASE_CREATE', registered ? '案件已保存，但暂时无法打开，请从列表重试。' : '案件创建失败，原有案件保持不变，请检查目录权限或剩余空间。');
+      throw wrap(error, 'FS_CASE_CREATE', registered ? '案件已保存，但暂时无法打开，请从列表重试。' : '案件创建失败，原有案件保持不变，请检查文件夹权限或剩余空间。');
     }
   }
 
-  _recoverCreations() {
+  async _recoverCreations() {
     // Only a fully created case bearing this app's journal can be registered after a crash.
     const base = path.join(this.workspacePath, 'cases');
     for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
@@ -305,7 +484,7 @@ class WorkspaceStore {
         if (journal.version !== 1 || journal.id !== entry.name) continue;
         const fields = validateInput({ name: journal.case_name, number: journal.case_no });
         if (fields.name !== journal.case_name || fields.number !== journal.case_no) continue;
-        const db = this._openCaseDatabase(journal);
+        const db = await this._openCaseDatabase(journal);
         db.close();
         const prior = this.catalog.prepare('SELECT * FROM workspace_case WHERE id = ?').get(journal.id);
         if (prior) {
@@ -327,12 +506,12 @@ class WorkspaceStore {
     }
   }
 
-  openCase(id) {
+  async openCase(id) {
     const record = this._caseRecord(id);
     let nextDb;
     try {
-      nextDb = this._openCaseDatabase(record);
-      const result = this._dto(record, nextDb);
+      nextDb = await this._openCaseDatabase(record);
+      const result = this._dto(record, nextDb, true);
       const openedAt = new Date().toISOString();
       this.catalog.prepare('UPDATE workspace_case SET last_opened_at = ? WHERE id = ?').run(openedAt, id);
       if (this.caseDb) this.caseDb.close();
@@ -353,4 +532,4 @@ class WorkspaceStore {
   }
 }
 
-module.exports = { WorkspaceStore };
+module.exports = { WorkspaceStore, WORKSPACE_SCHEMA_VERSION, CASE_SCHEMA_VERSION };

@@ -16,4 +16,6 @@ for (const dir of ['code/desktop', 'scripts', 'code/prototype']) {
 run(process.execPath, ['code/prototype/checks/intro.check.cjs']);
 run(process.execPath, ['code/prototype/checks/prototype.check.cjs']);
 run(process.execPath, ['code/prototype/checks/desktop.check.cjs']);
-run(process.execPath, ['scripts/run-electron-node.cjs', '--test', 'code/desktop/checks/storage.check.cjs']);
+run(process.execPath, ['code/prototype/checks/onboarding.check.cjs']);
+const storageChecks = fs.readdirSync(path.join(root, 'code/desktop/checks')).filter(name => name.endsWith('.check.cjs')).map(name => 'code/desktop/checks/' + name);
+run(process.execPath, ['scripts/run-electron-node.cjs', '--test', ...storageChecks]);

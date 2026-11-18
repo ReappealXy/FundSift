@@ -25,7 +25,7 @@ function setup(bridge){
   const dom=new JSDOM(fs.readFileSync(path.join(root,'index.html'),'utf8'),{runScripts:'outside-only',pretendToBeVisual:true,url:'https://fundsift.example/'});
   const w=dom.window;w.TextEncoder=TextEncoder;w.Blob=Blob;w.fundsiftDesktop=bridge;
   const runtimeErrors=[];w.addEventListener('error',event=>runtimeErrors.push(event.error||event.message));
-  for(const f of ['icons.js','data.js','exporter.js','app.js','intro.js'])w.eval(fs.readFileSync(path.join(root,f),'utf8'));
+  for(const f of ['icons.js','data.js','exporter.js','copy.js','app.js','intro.js'])w.eval(fs.readFileSync(path.join(root,f),'utf8'));
   w.FUND_INTRO.enter();
   const $=s=>w.document.querySelector(s),$$=s=>[...w.document.querySelectorAll(s)];
   const action=(name,extra='')=>{const el=$(`[data-action="${name}"]${extra}`);assert.ok(el,`Missing action ${name}${extra}`);el.click();};
@@ -35,18 +35,18 @@ function setup(bridge){
 }
 async function main(){
   let fixture=bridgeState([],null),t=setup(fixture.bridge);await settle();
-  verify(t.$('#main').textContent.includes('先选择案件数据保存目录'),'First use asks for data directory');
+  verify(t.$('#main').textContent.includes('先选择数据存放位置'),'First use asks for data directory');
   verify(t.$$('.case-table tbody tr').length===0&&!t.$('#main').textContent.includes('远川'),'Seed cases never enter desktop workspace');
   verify(t.$('#sidebar [data-route="materials"]').disabled,'Case pages disabled before workspace');
   fixture.bridge.chooseWorkspace=async()=>{fixture.state.chooseCalls++;return success({cancelled:true});};
   t.action('choose-workspace');await settle();
-  verify(t.$('#main').textContent.includes('尚未选择数据目录')&&!t.$('[data-action="new-case"]'),'Cancelled folder dialog leaves setup usable');
+  verify(t.$('#main').textContent.includes('已取消选择')&&!t.$('[data-action="new-case"]'),'Cancelled folder dialog leaves setup usable');
   fixture.bridge.chooseWorkspace=async()=>{fixture.state.chooseCalls++;fixture.state.workspacePath='D:\\ChosenWorkspace';return fixture.bridge.getState();};
   t.action('choose-workspace');await settle();
   verify(t.$('#main').textContent.includes('还没有案件'),'Chosen empty workspace has real empty state');
   verify(t.$('.desktop-path').textContent==='D:\\ChosenWorkspace','Chosen data path displayed');
   verify(!t.$('[data-action="choose-workspace"]'),'No implicit workspace switching after initial setup');
-  verify(t.$('#main').textContent.includes('重启后可继续打开'),'Desktop status describes local persistence');
+  verify(t.$('#main').textContent.includes('下次可从案件列表继续打开'),'Desktop status describes local persistence');
   t.action('new-case');verify(!t.$('#new-type')&&t.$$('input.text-input').length===2,'Desktop case form only name and number');
   t.action('save-case');verify(t.$('#form-error').textContent.includes('请填写')&&fixture.state.createCalls===0,'Empty form does not invoke create');
   t.input('#new-name','  合成案件  ');t.input('#new-number','  TEST-01  ');
@@ -60,20 +60,20 @@ async function main(){
   resolveCreate();await settle();
   verify(t.$('#main h1').textContent==='材料管理'&&t.$('#main').textContent.includes('案件名称与编号已保存'),'Successful creation opens saved case');
   verify(t.$('#toast-root').textContent.includes('案件已保存'),'Success message follows backend reply');
-  verify(t.$('#main').textContent.includes('尚未接入')&&!t.$('[data-action="pick-files"]')&&!t.$('[data-action="demo-import"]'),'Production materials cannot simulate import');
+  verify(t.$('#main').textContent.includes('开发中')&&!t.$('[data-action="pick-files"]')&&!t.$('[data-action="demo-import"]'),'Production materials cannot simulate import');
   for(const route of ['flows','review','exports']){
     t.nav(route);
-    verify(t.$('#main').textContent.includes('尚未接入')&&!t.$('.ledger-table')&&!t.$('[data-action="do-export"]'),'Unconnected '+route+' page has no synthetic results or writes');
+    verify(t.$('#main').textContent.includes('开发中')&&!t.$('.ledger-table')&&!t.$('[data-action="do-export"]'),'Unconnected '+route+' page has no synthetic results or writes');
   }
   const rogue=t.w.document.createElement('button');rogue.dataset.action='add-demo';t.w.document.body.append(rogue);rogue.click();rogue.remove();
   t.nav('home');verify(t.$$('.case-table tbody tr').length===1&&t.$('.summary-number').textContent==='1个','Injected demo action cannot populate desktop data');
-  t.action('new-case');t.input('#new-name','重复编号');t.input('#new-number','TEST-01');t.action('save-case');
+  t.action('new-case');t.input('#new-name','重复编号');t.input('#new-number','test-01');t.action('save-case');
   verify(t.$('#form-error').textContent.includes('已存在')&&fixture.state.createCalls===1,'Known duplicate number blocked');t.action('close-modal');
-  t.action('global-search');verify(t.$('.modal-body').textContent.includes('搜索范围：当前工作区的案件名称与编号'),'Search scope explicit');
+  t.action('global-search');verify(t.$('.modal-body').textContent.includes('搜索范围：这个数据存放位置内的案件名称与编号'),'Search scope explicit');
   t.input('#global-query','远川');verify(t.$$('.search-result').length===0,'Global search excludes synthetic seed cases');
   t.input('#global-query','TEST-01');verify(t.$$('.search-result').length===1,'Global search finds persisted case number');
   t.action('search-case');await settle();verify(fixture.state.openCalls.at(-1)==='new-case-id'&&t.$('#main h1').textContent==='材料管理','Search opening validates case through backend');
-  t.action('help');verify(t.$('.modal-body').textContent.includes('D:\\ChosenWorkspace')&&t.$('.modal-body').textContent.includes('尚未接入'),'Help distinguishes actual storage and future features');t.action('close-modal');
+  t.action('help');verify(t.$('.modal-body').textContent.includes('D:\\ChosenWorkspace')&&t.$('.modal-body').textContent.includes('开发中'),'Help distinguishes actual storage and future features');t.action('close-modal');
   const calls=fixture.state.createCalls;t.close();
   t=setup(fixture.bridge);await settle();
   verify(t.$$('.case-table tbody tr').length===1&&t.$('.case-table tbody').textContent.includes('合成案件'),'New renderer session loads backend case list');
@@ -88,22 +88,103 @@ async function main(){
   verify(t.$('#main h1').textContent==='案件工作台'&&t.$('.status.error').textContent.includes('暂不可用'),'Unreachable case is marked unavailable');
   verify([...t.$$('.case-table tbody tr td')].slice(1,4).every(td=>td.textContent==='—'),'Unavailable counts are unknown, not false zero');
   verify(t.$$('.summary-number').slice(1).every(el=>el.textContent.startsWith('—')),'All unreadable workspace does not show zero record totals');
-  verify(t.$('.desktop-unavailable').textContent.includes('不代表工作区全部结果'),'Workspace totals disclose unreadable case exclusion');
+  verify(t.$('.desktop-unavailable').textContent.includes('不代表全部结果'),'Workspace totals disclose unreadable case exclusion');
   verify(t.$('#sidebar [data-route="materials"]').disabled,'Unavailable case cannot show normal empty business page');
   t.close();
   const unavailable=caseRow('missing','失联合成案件','MISSING-01');unavailable.available=false;unavailable.stats=null;unavailable.error={code:'CASE_MISSING',message:'案件库文件不存在，请检查目录。'};
   fixture=bridgeState([unavailable]);t=setup(fixture.bridge);await settle();
   verify(t.$('.desktop-case-error').textContent.includes('案件库文件不存在')&&!t.$('#main').textContent.includes('[object Object]'),'Structured backend errors display their human message');
   t.close();
+  const incomplete=caseRow('pending-stats','统计尚待检查','STATS-01');
+  incomplete.stats={files:1,flows:null,pending:null};
+  incomplete.diagnostics=[{message:'文件 synthetic.csv 的 current 批次 3 不存在，未选择历史批次替代。'}];
+  fixture=bridgeState([caseRow('valid','正常案件','VALID-01'),incomplete]);t=setup(fixture.bridge);await settle();
+  verify(t.$$('.summary-number')[1].textContent==='1份','Known material count remains visible with unknown flow count');
+  verify(t.$$('.summary-number').slice(2).every(el=>el.textContent.startsWith('—')),'Any incomplete case makes workspace flow totals unknown');
+  verify(t.$('.desktop-case-error').textContent.includes('synthetic.csv')&&t.$('.desktop-case-error').textContent.includes('批次 3'),'Statistics diagnosis identifies file and batch');
+  verify(t.$$('.case-table tbody tr').some(el=>el.textContent.includes('统计待检查')),'Readable case with uncertain statistics has distinct state');
+  t.close();
   fixture=bridgeState([caseRow('a','案件甲','A-01')]);
   let attempts=0;fixture.bridge.getState=async()=>{attempts++;return attempts===1?failure('工作区无法读取'):success({needsWorkspace:false,workspacePath:fixture.state.workspacePath,cases:fixture.state.cases,currentCaseId:null});};
   t=setup(fixture.bridge);await settle();
-  verify(t.$('#main').textContent.includes('工作区读取失败')&&!t.$('.case-table'),'Read failure cannot appear as an empty workspace');
+  verify(t.$('#main').textContent.includes('案件数据暂时无法读取')&&!t.$('.case-table'),'Read failure cannot appear as an empty workspace');
   t.action('retry-workspace');await settle();verify(t.$$('.case-table tbody tr').length===1,'Read failure has a working retry path');
   t.action('open-case');await settle();verify(t.$('#main h1').textContent==='材料管理','Valid existing case opens');
   const file=new t.w.File(['synthetic'],'test.csv',{type:'text/csv'});Object.defineProperty(t.$('#file-picker'),'files',{configurable:true,value:[file]});
   t.$('#file-picker').dispatchEvent(new t.w.Event('change',{bubbles:true}));
   verify(!t.$('.modal')&&t.$('#toast-root').textContent.includes('未读取或登记文件'),'File picker event cannot bypass unimplemented import guard');
+  t.close();
+
+  // Database timestamps stay in UTC; display follows the computer's timezone.
+  const previousTimezone=process.env.TZ;
+  try{
+    for(const [zone,expectedUtc,expectedLate] of [
+      ['Asia/Shanghai','2026-11-13 16:00','2026-11-14 04:30'],
+      ['America/New_York','2026-11-13 03:00','2026-11-13 15:30']
+    ]){
+      process.env.TZ=zone;
+      const timestamps=[['utc','2026-11-13T08:00:00Z'],['late','2026-11-13T20:30:00.000Z'],['offset','2026-11-13T08:00:00+02:00'],['missing',null],['malformed','not a timestamp'],['bad-day','2026-02-30T08:00:00Z']];
+      fixture=bridgeState(timestamps.map(([id,value])=>({...caseRow(id,id,id),updatedAt:value})));
+      t=setup(fixture.bridge);await settle();
+      const displayed=id=>t.$(`tr[data-id="${id}"] td:nth-child(6)`).textContent;
+      verify(displayed('utc')===expectedUtc,zone+' converts UTC into local time');
+      verify(displayed('late')===expectedLate,zone+' applies local calendar date at a UTC day boundary');
+      verify(displayed('offset')===(zone==='Asia/Shanghai'?'2026-11-13 14:00':'2026-11-13 01:00'),zone+' respects explicit source offsets');
+      verify(['missing','malformed','bad-day'].every(id=>displayed(id)==='—'),zone+' missing and malformed timestamps remain unknown');
+      verify(fixture.state.cases[0].updatedAt==='2026-11-13T08:00:00Z','Rendering never rewrites stored UTC timestamp');
+      t.close();
+    }
+  }finally{if(previousTimezone===undefined)delete process.env.TZ;else process.env.TZ=previousTimezone;}
+
+  fixture=bridgeState([caseRow('status-case','状态检查案件','STATUS-01')]);
+  let receiveStatus,unsubscribed=0;
+  fixture.bridge.onOperationStatus=callback=>{receiveStatus=callback;return()=>{unsubscribed++;};};
+  t=setup(fixture.bridge);await settle();
+  const panel=t.$('#desktop-operation-status');
+  const emit=(operationId,phase,extra={})=>receiveStatus({operationId,operation:'create-case',phase,active:!['completed','failed'].includes(phase),elapsedMs:0,waitingLong:false,...extra});
+  verify(panel.hidden&&panel.getAttribute('role')==='status'&&panel.getAttribute('aria-live')==='polite','Operation feedback starts hidden and has a polite live region');
+  t.w.FUND_INTRO.show();
+  emit(1,'backing-up',{operation:'get-state',elapsedMs:18000,waitingLong:true});
+  verify(!panel.hidden&&!panel.closest('#application')&&panel.textContent.includes('正在备份旧版数据'),'Real operation feedback remains available while introduction is shown');
+  verify(panel.textContent.includes('18 秒')&&panel.textContent.includes('尚未返回结果')&&!panel.textContent.includes('失败'),'Long wait reports last known stage and elapsed time without claiming ongoing progress or failure');
+  emit(1,'completed');
+  verify(panel.hidden&&panel.textContent==='','Terminal result clears operation feedback');
+  t.w.FUND_INTRO.enter();
+  t.action('new-case');t.input('#new-name','保留填写内容');t.input('#new-number','STATUS-02');
+  const nameInput=t.$('#new-name');nameInput.focus();nameInput.setSelectionRange(1,3);
+  emit(2,'queued');emit(2,'running');emit(2,'checking',{elapsedMs:2000});
+  verify(t.$('#new-name')===nameInput&&nameInput.value==='保留填写内容'&&t.w.document.activeElement===nameInput&&nameInput.selectionStart===1&&nameInput.selectionEnd===3,'Progress updates preserve form nodes, entered data, focus and selection');
+  emit(3,'queued');
+  verify(panel.dataset.operationId==='2','Queued later operation does not hide the operation executing now');
+  emit(2,'completed');
+  verify(!panel.hidden&&panel.dataset.operationId==='3'&&panel.textContent.includes('等待前面的操作完成'),'Completing one operation leaves the queued operation visible');
+  emit(3,'running');emit(2,'backing-up');emit(2,'completed');
+  verify(panel.dataset.operationId==='3'&&!panel.hidden,'Late progress and terminal events cannot overwrite a newer active operation');
+  emit(3,'completed');
+  const rejectedBefore=t.$('#form-error').textContent;
+  receiveStatus({operationId:4,operation:'create-case',phase:'<script>bad</script>',active:true,elapsedMs:0,waitingLong:false});
+  verify(panel.hidden&&t.$('#form-error').textContent===rejectedBefore,'Malformed status does not produce UI or change form result');
+  let rejectCreate;
+  fixture.bridge.createCase=()=>new Promise(resolve=>{rejectCreate=()=>resolve(failure('合成保存故障，原案件不变。'));});
+  t.action('save-case');emit(4,'running');emit(4,'saving-settings',{elapsedMs:16000,waitingLong:true});
+  verify(!t.$('#toast-root').textContent.includes('已保存')&&t.$('[data-action="save-case"]').disabled,'Long operation feedback never acknowledges save or enables duplicate submission');
+  emit(4,'failed');
+  verify(panel.hidden&&t.$('[data-action="save-case"]').disabled,'Terminal status does not replace the authoritative RPC result');
+  rejectCreate();await settle();
+  verify(t.$('#form-error').textContent.includes('合成保存故障')&&t.$('#new-name').value==='保留填写内容'&&!t.$('[data-action="save-case"]').disabled,'RPC failure preserves inputs and enables deliberate retry after terminal feedback');
+  emit(5,'running');emit(6,'queued');emit(6,'failed');
+  verify(panel.dataset.operationId==='5'&&!panel.hidden,'A later operation terminal removes only its own feedback');
+  emit(5,'checking');
+  verify(panel.textContent.includes('正在检查数据'),'An existing earlier operation can still report its real phase');
+  emit(5,'completed');
+  verify(panel.hidden,'Out-of-order terminal results eventually clear all active operations');
+  for(const phase of ['choosing-location','confirming-location']){
+    emit(7,phase,{operation:'choose-workspace',elapsedMs:30000,waitingLong:true});
+    verify(panel.textContent.includes('请在系统窗口中完成选择或取消')&&!panel.textContent.includes('继续等待'),'Native dialog '+phase+' prompts the user to choose or cancel even after long wait');
+  }
+  emit(7,'completed');
+  t.w.dispatchEvent(new t.w.Event('pagehide'));
+  verify(unsubscribed===1&&!t.$('#desktop-operation-status'),'Page teardown unsubscribes operation events and removes feedback');
   t.close();
   console.log(`PASS: ${passed} desktop renderer contract assertions (mock bridge, no worker/database acceptance)`);
 }

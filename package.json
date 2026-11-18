@@ -1,6 +1,6 @@
 {
   "name": "fundsift",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "private": true,
   "author": "东启",
   "description": "东启勘流：本地资金流水分析工作台",
@@ -25,7 +25,9 @@
   "build": {
     "appId": "cn.dongqi.fundsift",
     "productName": "FundSift",
-    "directories": { "output": "dist" },
+    "directories": {
+      "output": "dist"
+    },
     "files": [
       "code/desktop/**/*.cjs",
       "code/desktop/assets/**",
@@ -39,9 +41,17 @@
       "package.json"
     ],
     "asar": true,
-    "asarUnpack": ["node_modules/better-sqlite3/**"],
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**"
+    ],
     "electronDist": "node_modules/electron/dist",
-    "win": { "target": ["portable"], "icon": "code/desktop/assets/icon.ico", "signExecutable": false },
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "icon": "code/desktop/assets/icon.ico",
+      "signExecutable": false
+    },
     "artifactName": "FundSift-${version}-win-${arch}.${ext}"
   }
 }

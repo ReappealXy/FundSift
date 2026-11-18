@@ -12,7 +12,7 @@ function setup(mutateSeed){
   const html=fs.readFileSync(path.join(root,'index.html'),'utf8');
   const dom=new JSDOM(html,{runScripts:'outside-only',pretendToBeVisual:true,url:'https://fundsift.example/'});
   const w=dom.window;w.TextEncoder=TextEncoder;w.Blob=Blob;
-  for(const file of ['icons.js','data.js','exporter.js'])w.eval(fs.readFileSync(path.join(root,file),'utf8'));
+  for(const file of ['icons.js','data.js','exporter.js','copy.js'])w.eval(fs.readFileSync(path.join(root,file),'utf8'));
   if(mutateSeed)mutateSeed(w.FUND_DATA);
   w.eval(fs.readFileSync(path.join(root,'app.js'),'utf8'));
   w.eval(fs.readFileSync(path.join(root,'intro.js'),'utf8'));
@@ -30,7 +30,7 @@ async function main(){
   verify(t.$('#main h1').textContent==='案件工作台','Home opens');
   verify(t.$$('.case-table tbody tr').length===4,'Four synthetic cases');
   verify(t.$$('.summary-number').map(e=>e.textContent.trim()).join('|')==='4个|14份|55条|6条','All homepage metrics match records');
-  for(const route of ['materials','flows','review','exports','home']){t.nav(route);verify(t.$('#main h1').textContent===({materials:'材料管理',flows:'并表流水',review:'异常复核',exports:'结果导出',home:'案件工作台'})[route],route+' page renders');}
+  for(const route of ['materials','flows','review','exports','home']){t.nav(route);verify(t.$('#main h1').textContent===({materials:'材料管理',flows:'流水明细',review:'异常复核',exports:'结果导出',home:'案件工作台'})[route],route+' page renders');}
   t.input('#case-query','恒舟');verify(t.$$('.case-table tbody tr').length===1,'Case search');
   t.input('#case-query','不存在');verify(t.$$('.case-table tbody tr').length===0&&!!t.$('.empty-state'),'Case empty state');
   t.input('#case-query','');t.action('case-tab','[data-value="archived"]');verify(t.$$('.case-table tbody tr').length===1,'Archived case filter');

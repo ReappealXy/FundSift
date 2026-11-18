@@ -6,13 +6,14 @@ const assert=require('node:assert/strict');
 const root=path.resolve(__dirname,'..'),key='fundsift.skipIntro.v1';
 let passed=0;
 function verify(condition,message){assert.ok(condition,message);passed++;}
-function setup({skip=null,storage='ok',hash=''}={}){
+function setup({skip=null,storage='ok',hash='',reducedMotion=null}={}){
   const dom=new JSDOM(fs.readFileSync(path.join(root,'index.html'),'utf8'),{runScripts:'outside-only',pretendToBeVisual:true,url:'https://fundsift.example/'+hash});
   const w=dom.window;w.TextEncoder=TextEncoder;w.Blob=Blob;
+  if(reducedMotion!==null)w.matchMedia=()=>({matches:reducedMotion});
   if(skip!==null)w.localStorage.setItem(key,skip);
   if(storage==='blocked')Object.defineProperty(w,'localStorage',{get(){throw new w.DOMException('Storage disabled','SecurityError');}});
   if(storage==='readonly'){const storageProxy={getItem:k=>k===key?skip:null,setItem(){throw new w.DOMException('Quota exceeded','QuotaExceededError');},removeItem(){}};Object.defineProperty(w,'localStorage',{value:storageProxy});}
-  for(const file of ['icons.js','data.js','exporter.js','app.js','intro.js'])w.eval(fs.readFileSync(path.join(root,file),'utf8'));
+  for(const file of ['icons.js','data.js','exporter.js','copy.js','app.js','intro.js'])w.eval(fs.readFileSync(path.join(root,file),'utf8'));
   const $=s=>w.document.querySelector(s);
   const click=s=>{assert.ok($(s),s);$(s).click();};
   const action=name=>click('[data-action="'+name+'"]');
@@ -69,6 +70,22 @@ async function main(){
   t.w.location.hash='home';t.w.dispatchEvent(new t.w.HashChangeEvent('hashchange'));
   verify(t.$('#intro-screen').hidden&&t.w.document.title==='东启勘流 · 案件工作台','Forward to workspace restores screen and title');
   t.dom.window.close();
+  t=setup({reducedMotion:false});let entries=0;
+  t.w.document.addEventListener('fundsift:enter-workspace',()=>entries++);
+  t.click('#enter-workspace');
+  verify(t.w.document.body.classList.contains('intro-departing'),'Entry starts the staged transition');
+  verify(!t.$('#application').hidden&&t.$('#application').inert&&t.$('#intro-screen').inert,'Both layers remain inert during transition');
+  verify(t.$('#enter-workspace').disabled,'Entry button cannot repeat during transition');
+  t.w.FUND_INTRO.enter();verify(entries===1,'Repeated entry does not restart the transition');
+  await new Promise(resolve=>setTimeout(resolve,1160));
+  verify(t.$('#intro-screen').hidden&&!t.$('#application').inert&&!t.w.document.body.classList.contains('intro-transition'),'Transition finishes and restores workspace interaction');
+  verify(t.w.document.activeElement.id==='main','Animated entry moves focus after transition');
+  t.w.FUND_INTRO.show();t.click('#enter-workspace');t.w.FUND_INTRO.show();
+  await new Promise(resolve=>setTimeout(resolve,1160));
+  verify(!t.$('#intro-screen').hidden&&t.$('#application').hidden&&!t.$('#enter-workspace').disabled,'Returning to introduction cancels a pending transition');
+  t.dom.window.close();
+  t=setup({reducedMotion:true});t.click('#enter-workspace');
+  verify(t.$('#intro-screen').hidden&&!t.w.document.body.classList.contains('intro-departing'),'Reduced motion enters immediately');t.dom.window.close();
   console.log('PASS: '+passed+' introduction and startup preference assertions');
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

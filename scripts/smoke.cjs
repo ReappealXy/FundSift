@@ -7,6 +7,7 @@ const { spawn } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const executable = process.argv[2] ? path.resolve(process.argv[2]) : require('electron');
 const packaged = Boolean(process.argv[2]);
+const version = require('../package.json').version;
 
 async function launch(config, configPath) {
   await fs.writeFile(configPath, JSON.stringify(config));
@@ -30,14 +31,29 @@ async function launch(config, configPath) {
   });
 }
 
+async function seedLegacy(workspace, profile) {
+  await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['scripts/run-electron-node.cjs', 'scripts/seed-v1-smoke.cjs', workspace, profile], {
+      cwd: root, windowsHide: true, stdio: 'inherit'
+    });
+    child.once('error', reject);
+    child.once('exit', code => code === 0 ? resolve() : reject(new Error('Legacy fixture failed: ' + code)));
+  });
+}
+
 (async () => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'fundsift-m0-smoke-'));
   const profile = path.join(temp, 'profile');
   const workspace = path.join(temp, 'workspace');
   await fs.mkdir(profile);
-  const output = path.join(root, 'artifacts', packaged ? 'm0-packaged' : 'm0-development');
+  const output = path.join(root, 'artifacts', 'm0-hardening-' + version + (packaged ? '-packaged' : '-development'));
   await fs.mkdir(output, { recursive: true });
   const results = [];
+  const legacyWorkspace = path.join(temp, 'legacy-workspace'), legacyProfile = path.join(temp, 'legacy-profile');
+  await seedLegacy(legacyWorkspace, legacyProfile);
+  const upgrade = { phase: 'upgrade', profile: legacyProfile, workspace: legacyWorkspace, result: path.join(output, 'upgrade.json'), screenshot: path.join(output, 'upgrade.png') };
+  results.push(await launch(upgrade, path.join(temp, 'upgrade.json')));
+  console.log('PASS ' + (packaged ? 'packaged ' : '') + 'v1 upgrade');
   for (const phase of ['create', 'reopen']) {
     const config = { phase, profile, workspace, result: path.join(output, phase + '.json'), screenshot: path.join(output, phase + '.png') };
     results.push(await launch(config, path.join(temp, phase + '.json')));
