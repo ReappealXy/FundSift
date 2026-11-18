@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://fundsift.local/schemas/g0/bundle-v1",
-  "title": "G0 v1 local dataset contract",
+  "$id": "https://fundsift.local/schemas/g0/bundle-v3",
+  "title": "G0 v3 local dataset contract",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -21,10 +21,10 @@
   ],
   "properties": {
     "schema_version": {
-      "const": 1
+      "const": 3
     },
     "matrix_version": {
-      "const": 2
+      "const": 4
     },
     "dataset_id": {
       "type": "string",
@@ -497,6 +497,7 @@
           "balance_scope",
           "balance_same_direction",
           "currency_policy",
+          "currency_map",
           "reversal_note",
           "review"
         ],
@@ -594,6 +595,22 @@
               "verified_cny",
               "unverified"
             ]
+          },
+          "currency_map": {
+            "type": "object",
+            "description": "仅用于绑定格式的非 ISO 原始币种别名；原文 trim 后精确匹配，映射随本规则版本的 review 批准，不提供缺币种默认值。",
+            "propertyNames": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?(?![\\s\\S])",
+              "not": {
+                "pattern": "^[A-Za-z]{3}$"
+              }
+            },
+            "additionalProperties": {
+              "type": "string",
+              "pattern": "^[A-Z]{3}(?![\\s\\S])"
+            }
           },
           "reversal_note": {
             "type": "string",

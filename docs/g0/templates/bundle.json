@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "matrix_version": 2,
+  "schema_version": 3,
+  "matrix_version": 4,
   "dataset_id": "replace-with-local-dataset-id",
   "dataset_version": 1,
   "state": "draft",

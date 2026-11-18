@@ -27,7 +27,7 @@ function createFixture(t) {
   const rule = {
     id:'r1',rule_version:1,platform:'synthetic',format_key:'synthetic-A-v1',amount_expr:'A',source_unit:'元',unit_scale:100,
     rounding_rule:'ROUND_HALF_UP',direction_map:{},negative_policy:'signed',zero_policy:'pending',zero_direction:null,
-    balance_scope:'unknown',balance_same_direction:false,currency_policy:'explicit',reversal_note:'合成A类金额符号表示方向，无冲正推断',review:approved()
+    balance_scope:'unknown',balance_same_direction:false,currency_policy:'explicit',currency_map:{},reversal_note:'合成A类金额符号表示方向，无冲正推断',review:approved()
   };
   const answer = {
     source_id:'s1',source_sha256:source.sha256,source_loc:'1',format_rule_id:'r1',rule_version:1,layer:'A',
@@ -37,7 +37,7 @@ function createFixture(t) {
     basis:'纯合成规则A，负号代表支出；-1.00元为-100分。',review:unreviewed(),coverage:[],question_ids:[]
   };
   const bundle = {
-    schema_version:1,matrix_version:2,dataset_id:'synthetic-contract-test',dataset_version:1,state:'draft',
+    schema_version:3,matrix_version:4,dataset_id:'synthetic-contract-test',dataset_version:1,state:'draft',
     generator:{name:'synthetic-fixture-only',version:'1',implementation_path:null,sha256:null,independence:'只构造测试数据，不导入将来解析器和金额引擎。'},
     answers_file:'answers.jsonl',answers_sha256:null,schema_sha256:null,matrix_sha256:null,sources:[source],rules:[rule],questions:[]
   };
@@ -106,6 +106,9 @@ function createReleaseFixture(t) {
   add('missing-amount',['missing_amount'],p=>{unknown(p,'amount_missing');p.row.raw.raw_amount_text=null;});
   add('missing-time',['missing_time'],p=>{setPending(p,'time_missing');p.row.raw.txn_time_text=null;p.row.expected.txn_time=null;});
   add('time-timezone',['time_timezone_marker'],p=>{setPending(p,'timezone_marker');p.row.raw.txn_time_text='2026-03-01T10:00:00+08:00';p.row.expected.txn_time=null;});
+  add('time-ambiguous',['time_ambiguous'],p=>{setPending(p,'time_ambiguous');p.row.raw.txn_time_text='2026-11-18 08:00-09:00';p.row.expected.txn_time=null;});
+  add('time-zone-abbreviation',['time_zone_abbreviation'],p=>{setPending(p,'timezone_marker');p.row.raw.txn_time_text='2026-11-18 08:00 JST';p.row.expected.txn_time=null;});
+  add('time-zone-abbreviation-ambiguous',['time_zone_abbreviation'],p=>{setPending(p,'time_ambiguous');p.row.raw.txn_time_text='2026-11-18 08:00 CST';p.row.expected.txn_time=null;});
   add('amount-unparseable',['amount_unparseable'],p=>{unknown(p,'amount_unparseable');p.row.raw.raw_amount_text='N/A';});
   add('missing-account',['missing_account'],p=>{setPending(p,'account_missing');p.source.account_ref=null;p.row.raw.acct_no=null;p.row.expected.acct_no=null;});
   add('unknown-direction',['unknown_direction'],p=>{expr(p,'E');unknown(p,'direction_unknown');p.row.raw.raw_amount_text='1.00';p.row.raw.raw_direction='未收录方向';});
@@ -123,6 +126,7 @@ function createReleaseFixture(t) {
   add('foreign',['currency_foreign'],p=>{p.row.raw.currency_text='USD';p.row.expected.currency='USD';setPending(p,'currency_unsupported');});
   add('currency-known',['currency_missing_verified'],p=>{p.rule.currency_policy='verified_cny';p.row.raw.currency_text=null;});
   add('currency-unknown',['currency_missing_unknown'],p=>{p.rule.currency_policy='unverified';p.row.raw.currency_text=null;p.row.expected.currency=null;setPending(p,'currency_missing');});
+  add('currency-mapped',['currency_mapped_cny'],p=>{p.rule.currency_map={'人民币':'CNY','156':'CNY'};p.row.raw.currency_text='人民币';});
   const unknownSource=clone(baseSource);
   Object.assign(unknownSource,{id:'s-unknown-file',path:'synthetic-unknown.bin',file_name:'synthetic-unknown.bin',format:'unknown',rule_id:null,rule_version:null,disposition:'unrecognized'});
   unknownSource.observations={encoding:null,bom:null,merged_cells:null,logical_records:1,header_records:0,footer_records:0,other_non_data_records:1,data_records:0};

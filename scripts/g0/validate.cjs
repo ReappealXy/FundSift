@@ -14,7 +14,44 @@ const key = (source, loc) => JSON.stringify([source, loc]);
 const decimal=value=>typeof value==='string' && /^[+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/.test(value.trim());
 const subCent=value=>decimal(value)&&/\.\d{2}\d*[1-9]\d*$/.test(value.trim());
 const currencyEvidence=value=>typeof value==='string'&&/^[A-Za-z]{3}$/.test(value.trim())?value.trim().toUpperCase():null;
-const timezoneMarker=value=>typeof value==='string'&&(/\b(?:UTC|GMT)\b/i.test(value)||/(?:T|\s)\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?\s*(?:Z|[+-]\d{2}(?::?\d{2})?)\s*$/i.test(value));
+const ambiguousTimeWords = new Set(['CST','IST','EST','PST','BST','AST','GST','MST']);
+const timeWordPattern = /\b(?:CST|IST|EST|PST|BST|AST|GST|MST|UTC|GMT|JST|KST|HKT|SGT|AEST|AEDT|CET|CEST|MSK)\b/gi;
+const rawTimePattern = /(?<![0-9:])(?:(\d{4}[-/]\d{2}[-/]\d{2})(T|\s+))?\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?![0-9:])/gi;
+const numericTimeOffset = /[+-]\d{2}(?::?\d{2})?(?![A-Za-z0-9_:.])/g;
+function timeEvidence(value) {
+  if (typeof value !== 'string') return {kind:null,abbreviation:false};
+  const text = value.trim();
+  const words=[...text.matchAll(timeWordPattern)],times=[...text.matchAll(rawTimePattern)];
+  const result=kind=>({kind,abbreviation:words.length>0});
+  // Compare entire time endpoints before looking for offsets. A compact
+  // ISO T timestamp ending in -HH:mm retains its existing offset meaning.
+  for(let i=0;i<times.length-1;i++) {
+    const first=times[i],next=times[i+1],end=first.index+first[0].length;
+    const between=text.slice(end,next.index);
+    if(!/^\s*(?:-|–|—|~|～|至|到)\s*$/.test(between))continue;
+    const isoOffset=first[2]?.toUpperCase()==='T'&&between==='-'&&!next[1]&&/^\d{2}:\d{2}$/.test(next[0])&&!/[A-Za-z0-9_:.]/.test(text[next.index+next[0].length]||'');
+    if(!isoOffset)return result('ambiguous');
+  }
+  if(words.some(word=>ambiguousTimeWords.has(word[0].toUpperCase())))return result('ambiguous');
+  let marked=words.length>0;
+  for(const time of times) {
+    const end=time.index+time[0].length,tail=text.slice(end);
+    // Z is only evidence next to a time, never inside Zebra or a note.
+    if(/^\s*Z(?![A-Za-z0-9_:.])/i.test(tail))marked=true;
+    for(const offset of tail.matchAll(numericTimeOffset)) {
+      const adjacent=tail.slice(0,offset.index).trim()==='';
+      // Non-adjacent date/identifier digits are not offset evidence.
+      if(!adjacent&&/[0-9:]/.test(tail[offset.index-1]||''))continue;
+      if(!adjacent||time[2]?.toUpperCase()!=='T'&&/^-\d{2}:\d{2}$/.test(offset[0]))return result('ambiguous');
+      marked=true;
+    }
+  }
+  for(const word of words) {
+    const previous=times.filter(time=>time.index+time[0].length<=word.index).at(-1);
+    if(previous&&text.slice(previous.index+previous[0].length,word.index).trim()!=='')return result('ambiguous');
+  }
+  return result(marked?'timezone':null);
+}
 const unparseableAmount=(raw,rule)=>(rule?.amount_expr==='D'?[raw.raw_income_text,raw.raw_expense_text]:[raw.raw_amount_text]).some(value=>!blank(value)&&!decimal(value));
 function localTime(value) {
   const m=typeof value==='string'&&/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/.exec(value);
@@ -130,6 +167,7 @@ async function validateDataset(bundlePath, options = {}) {
     check(rule.negative_policy === policies[rule.amount_expr] || rule.amount_expr === 'D' && rule.negative_policy === 'pending', 'RULE','金额类别与负号策略不匹配',id);
     check(!rule.balance_same_direction || rule.balance_scope === 'asset_ledger','RULE','资产同向公式不能用于其他余额口径',id);
     if (rule.amount_expr === 'A' || rule.amount_expr === 'D') check(Object.keys(rule.direction_map).length === 0,'RULE','A/D 类不执行方向词表',id);
+    for (const alias of Object.keys(rule.currency_map)) check(!blank(alias) && alias === alias.trim() && currencyEvidence(alias) === null,'RULE','币种映射键必须是无首尾空白的非 ISO 原文，不得覆盖三字母币种',id);
     approved(rule.review, 'rule:' + id);
   }
   const sourceRoot = options.sourceRoot ? path.resolve(options.sourceRoot) : base;
@@ -216,7 +254,11 @@ async function validateDataset(bundlePath, options = {}) {
       check(e.status==='pending'&&e.pending_reason.some(r=>/amount|sign|column|direction|format|negative/.test(r.reason_code)),'RULE','规则声明负号语义待核，人工记录不能悄悄越过规则卡确认',at);
     if (e.status === 'confirmed') check(amount !== null && !blank(e.direction) && !blank(e.txn_time) && !blank(e.acct_no) && !blank(e.currency),'CONFIRMED','confirmed 关键字段必须齐全',at);
     if(e.txn_time!==null)check(localTime(e.txn_time)!==null,'TIME','标准交易时间必须是有效本地时间，不含时区标记',at);
-    if(timezoneMarker(row.raw.txn_time_text))check(e.txn_time===null&&e.status==='pending'&&e.pending_reason.some(r=>/time/.test(r.reason_code)),'TIME','带时区标记的原始时间必须保留原文并待核，不得静默转成本地时间',at);
+    const timeInfo=timeEvidence(row.raw.txn_time_text),timeKind=timeInfo.kind;
+    const timeReason=e.pending_reason.some(r=>/time/.test(r.reason_code)&&r.reason_code!=='time_ambiguous');
+    const ambiguousReason=e.pending_reason.some(r=>r.reason_code==='time_ambiguous');
+    if(timeKind==='timezone')check(e.txn_time===null&&e.status==='pending'&&timeReason,'TIME','带时区标记的原始时间必须保留原文并以时间／时区原因待核，不得仅用 time_ambiguous 或静默转成本地时间',at);
+    if(timeKind==='ambiguous')check(e.txn_time===null&&e.status==='pending'&&ambiguousReason,'TIME','时间区间或标记含义不明确，须保留原文、保持时间未知并记录 time_ambiguous；不得擅自取起点或终点',at);
     if(unparseableAmount(row.raw,rule))check(amount===null&&e.status==='pending'&&e.pending_reason.some(r=>/amount|format/.test(r.reason_code)),'PENDING','非空但无法解析的原始金额必须保持未知并给出待核原因',at);
     if(blank(e.txn_time))check(e.status==='pending' && e.pending_reason.some(r=>/time/.test(r.reason_code)),'PENDING','未知交易时间需要独立待核原因',at);
     if(blank(e.acct_no))check(e.status==='pending' && e.pending_reason.some(r=>/account|acct/.test(r.reason_code)),'PENDING','未知账户需要独立待核原因',at);
@@ -224,8 +266,11 @@ async function validateDataset(bundlePath, options = {}) {
     if (amount === 0n && e.status === 'confirmed') check(rule?.zero_policy === 'confirmed' && e.direction === rule.zero_direction,'ZERO','零金额确认须有规则声明方向与策略',at);
     if (blank(e.currency)) check(e.status === 'pending','CURRENCY','未知币种必须待核',at);
     const originalCurrency=currencyEvidence(row.raw.currency_text);
-    if(originalCurrency)check(e.currency===originalCurrency,'CURRENCY','已知原始币种不得被替换或默认成 CNY（比较忽略首尾空格和大小写）',at);
-    else if(e.currency!==null)check(blank(row.raw.currency_text)&&e.currency==='CNY'&&rule?.currency_policy==='verified_cny'&&rule.review.status==='approved','CURRENCY','标准币种须有可核对的原始 ISO 证据；缺原文只允许已批准规则明确声明 CNY',at);
+    const alias=!blank(row.raw.currency_text)&&!originalCurrency?row.raw.currency_text.trim():null;
+    const mappedCurrency=alias!==null&&rule?.review.status==='approved'&&Object.hasOwn(rule.currency_map,alias)?rule.currency_map[alias]:null;
+    const evidencedCurrency=originalCurrency||mappedCurrency;
+    if(evidencedCurrency)check(e.currency===evidencedCurrency,'CURRENCY','标准币种必须保留原始 ISO 或该格式已批准映射的币种，不得替换或默认成 CNY',at);
+    else if(e.currency!==null)check(blank(row.raw.currency_text)&&e.currency==='CNY'&&rule?.currency_policy==='verified_cny'&&rule.review.status==='approved','CURRENCY','标准币种须有原始 ISO 或该格式已批准映射的证据；缺原文只允许已批准规则明确声明 CNY',at);
     if (rule) check(e.balance_scope === rule.balance_scope,'BALANCE','余额口径须与绑定规则相同',at);
     if (['pass','fail'].includes(b.status)) {
       check(b.comparable && e.balance_scope === 'asset_ledger' && rule?.balance_same_direction && b.segment_complete && b.order === 'stable' && amount !== null && e.direction !== null && balance !== null && b.previous !== null,'BALANCE','余额 pass/fail 必须满足完整资产链的可比前提',at);
@@ -251,7 +296,7 @@ async function validateDataset(bundlePath, options = {}) {
       // These are witness checks, not an alternative amount engine.
       const nonempty = value => !blank(value);
       // Lexical decimal witnesses never compute the oracle amount. Formatting
-      // beyond this neutral grammar needs explicit human evidence in G0 v2.
+      // beyond this neutral grammar needs explicit human evidence.
       const nonzero=value=>decimal(value)&&/[1-9]/.test(value.replace(/[+\-.,]/g,''));
       const zero=value=>decimal(value)&&!nonzero(value);
       const negative=value=>decimal(value)&&value.trim().startsWith('-')&&nonzero(value);
@@ -266,12 +311,15 @@ async function validateDataset(bundlePath, options = {}) {
         d_empty_or_zero:rule?.amount_expr==='D'&&dEmpty&&e.status==='pending',d_negative_defined:rule?.amount_expr==='D'&&rule.negative_policy==='column_defined'&&dNeg,d_negative_undefined:rule?.amount_expr==='D'&&rule.negative_policy==='pending'&&dNeg&&e.status==='pending',
         sign_conflict_defined:rule?.amount_expr==='B'&&knownDirection&&negative(row.raw.raw_amount_text),sign_conflict_undefined:knownDirection&&negative(row.raw.raw_amount_text)&&rule?.negative_policy==='pending'&&e.status==='pending',
         zero_defined:amount===0n&&isRawZero&&rule?.zero_policy==='confirmed',zero_undefined:amount===0n&&isRawZero&&e.status==='pending'&&rule?.zero_policy==='pending',missing_amount:amount===null&&blank(row.raw.raw_amount_text)&&blank(row.raw.raw_income_text)&&blank(row.raw.raw_expense_text)&&e.status==='pending',missing_time:e.txn_time===null&&blank(row.raw.txn_time_text)&&e.status==='pending',missing_account:e.acct_no===null&&blank(row.raw.acct_no)&&e.status==='pending',unknown_direction:!knownDirection&&nonempty(row.raw.raw_direction)&&e.direction===null&&e.status==='pending',
-        time_timezone_marker:timezoneMarker(row.raw.txn_time_text)&&e.txn_time===null&&e.status==='pending'&&e.pending_reason.some(r=>/time/.test(r.reason_code)),
+        time_timezone_marker:timeKind==='timezone'&&e.txn_time===null&&e.status==='pending'&&timeReason,
+        time_ambiguous:timeKind==='ambiguous'&&e.txn_time===null&&e.status==='pending'&&ambiguousReason,
+        time_zone_abbreviation:timeInfo.abbreviation&&e.txn_time===null&&e.status==='pending'&&(timeKind==='ambiguous'?ambiguousReason:timeKind==='timezone'&&timeReason),
         amount_unparseable:unparseableAmount(row.raw,rule)&&amount===null&&e.status==='pending'&&e.pending_reason.some(r=>/amount|format/.test(r.reason_code)),
         reversal_b:rule?.amount_expr==='B'&&negative(row.raw.raw_amount_text)&&knownDirection&&e.reversal_flag===1,reversal_memo_only:/冲正|退款|抹[帐账]/.test(row.raw.summary||'')&&e.reversal_flag===0,rounding_yuan:rule?.source_unit==='元'&&subCent(row.raw.raw_amount_text),source_fen:rule?.source_unit==='分'&&/^[+-]?\d+$/.test(row.raw.raw_amount_text||''),
         balance_scope_asset_ledger:e.balance_scope==='asset_ledger'&&b.comparable,balance_scope_debt:e.balance_scope==='debt',balance_scope_available:e.balance_scope==='available',balance_scope_unknown:e.balance_scope==='unknown',
         balance_fail_confirmed:b.status==='fail'&&e.status==='confirmed',pending_not_pass:e.status==='pending'&&amount===null&&b.status!=='pass',balance_no_previous:b.previous===null&&!b.comparable,same_second_stable:b.order==='stable'&&b.previous!==null&&b.comparable,same_second_unstable:b.order==='unknown'&&!b.comparable,incomplete_segment:!b.segment_complete&&!b.comparable,
-        currency_foreign:e.currency!==null&&e.currency!=='CNY'&&originalCurrency===e.currency,currency_missing_verified:blank(row.raw.currency_text)&&e.currency==='CNY'&&rule?.currency_policy==='verified_cny',currency_missing_unknown:blank(row.raw.currency_text)&&e.currency===null&&e.status==='pending'
+        currency_foreign:e.currency!==null&&e.currency!=='CNY'&&evidencedCurrency===e.currency,currency_missing_verified:blank(row.raw.currency_text)&&e.currency==='CNY'&&rule?.currency_policy==='verified_cny',currency_missing_unknown:blank(row.raw.currency_text)&&e.currency===null&&e.status==='pending',
+        currency_mapped_cny:originalCurrency===null&&mappedCurrency==='CNY'&&e.currency==='CNY'
       };
       if(Object.hasOwn(witness,id)) check(witness[id],'COVERAGE','该行不满足覆盖项的基础见证条件：'+id,at);
     }

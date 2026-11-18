@@ -204,9 +204,9 @@ test('CLI对失败契约返回非零状态，对草稿保持可识别JSON输出'
   assert.notEqual(bad.status,0);assert.equal(JSON.parse(bad.stdout).ok,false);
 });
 
-test('纯合成完整冻结夹具走通38覆盖和五角色准入，但不是实际G0证据', async t => {
+test('纯合成完整冻结夹具走通41覆盖和五角色准入，但不是实际G0证据', async t => {
   const f=createReleaseFixture(t),r=await validateDataset(f.bundlePath,{sourceRoot:f.sourceRoot,release:true,expectedBundleSha256:f.expectedBundleSha256});
-  assert.equal(r.ok,true,JSON.stringify(r));assert.equal(r.ready_for_m1,true);assert.equal(r.counts.coverage,38);
+  assert.equal(r.ok,true,JSON.stringify(r));assert.equal(r.ready_for_m1,true);assert.equal(r.counts.coverage,41);
 });
 
 test('完整冻结基准删去覆盖见证或真实角色即拒绝', async t => {
@@ -391,8 +391,17 @@ test('int64自身拒绝非规范文本、非整数和不安全数字，不依赖
   for(const value of ['9223372036854775808','-9223372036854775809'])assert.throws(()=>int64(value));
 });
 
-test('旧matrix版本不能在新38项契约中静默继续使用', async t => {
-  const f=createFixture(t);f.bundle.matrix_version=1;rejected(await check(f));
+test('旧schema或matrix版本不能在新41项契约中静默继续使用', async t => {
+  const f=createFixture(t);
+  f.bundle.schema_version=1;
+  let r=await check(f);rejected(r);assert.ok(r.errors.some(e=>e.code==='SCHEMA'));
+  for(const schemaVersion of [1,2,3])for(const matrixVersion of [1,2,3,4]) {
+    if(schemaVersion===3&&matrixVersion===4)continue;
+    f.bundle.schema_version=schemaVersion;f.bundle.matrix_version=matrixVersion;
+    r=await check(f);rejected(r);assert.ok(r.errors.some(e=>e.code==='SCHEMA'));
+  }
+  f.bundle.schema_version=3;f.bundle.matrix_version=4;
+  r=await check(f);assert.equal(r.ok,true,JSON.stringify(r));
 });
 
 test('时区标记覆盖要求保留原文并以未知本地时间待核', async t => {
@@ -426,9 +435,9 @@ test('不可解析金额覆盖要求非空非十进制原文，未知不能冒�
   rejected(await check(f));
 });
 
-test('正式38项基准缺少任一新增覆盖即拒绝', async t => {
+test('正式41项基准缺少任一新增覆盖即拒绝', async t => {
   const f=createReleaseFixture(t);
-  for(const [pair,coverage] of [['time-timezone','time_timezone_marker'],['amount-unparseable','amount_unparseable']]) {
+  for(const [pair,coverage] of [['time-timezone','time_timezone_marker'],['amount-unparseable','amount_unparseable'],['time-ambiguous','time_ambiguous'],['currency-mapped','currency_mapped_cny']]) {
     f.pairs.get(pair).row.coverage=[];
     const r=await validateDataset(f.bundlePath,{sourceRoot:f.sourceRoot,release:true,expectedBundleSha256:f.pin()});
     rejected(r);assert.ok(r.errors.some(e=>e.code==='COVERAGE'&&e.at===coverage));
@@ -482,4 +491,274 @@ test('非D类不可解析单金额不能借无关双列字段编造标准金额'
   pending(f,'amount_unparseable');f.answer.expected.amount=null;f.answer.expected.direction=null;
   f.answer.coverage=['amount_unparseable'];
   const valid=await check(f);assert.equal(valid.ok,true,JSON.stringify(valid));
+});
+
+test('币种映射为规则卡必填字段，不允许旧规则靠省略获得默认映射', async t => {
+  const f=createFixture(t);delete f.rule.currency_map;
+  const r=await check(f);rejected(r);assert.ok(r.errors.some(e=>e.code==='SCHEMA'));
+});
+
+test('已批准的格式币种映射识别中文和数字别名，首尾空白比较不改写原文', async t => {
+  const f=createFixture(t);f.rule.currency_map={'人民币':'CNY','156':'CNY'};
+  for(const raw of ['人民币','156',' 人民币 ','\t156\n']) {
+    f.answer.raw.currency_text=raw;
+    const r=await check(f);assert.equal(r.ok,true,JSON.stringify(r));
+    assert.equal(f.answer.raw.currency_text,raw,'Mapping comparison preserves the evidence');
+    assert.equal(f.answer.expected.currency,'CNY');
+  }
+  assert.equal(f.answer.layer,'A','Approved mapping may classify ordinary rows under their bound rule');
+});
+
+test('未批准的币种映射不能充当币种证据，草稿只能保留未知待核', async t => {
+  const f=createFixture(t);f.rule.currency_map={'人民币':'CNY'};
+  f.rule.review=unreviewed();f.answer.raw.currency_text='人民币';
+  const guessed=await check(f);rejected(guessed);assert.ok(guessed.errors.some(e=>e.code==='CURRENCY'));
+  pending(f,'currency_unverified');f.answer.expected.currency=null;
+  const draft=await check(f);assert.equal(draft.ok,true,JSON.stringify(draft));
+  assert.equal(draft.ready_for_m1,false);
+});
+
+test('映射未命中不能退回verified_cny或使用继承属性猜币种', async t => {
+  const f=createFixture(t);f.rule.currency_policy='verified_cny';f.rule.currency_map={'人民币':'CNY'};
+  for(const raw of ['人 民 币','人民币元','constructor','toString','__proto__']) {
+    f.answer.raw.currency_text=raw;f.answer.expected.currency='CNY';
+    f.answer.layer='A';f.answer.expected.status='confirmed';f.answer.expected.pending_reason=[];
+    const guessed=await check(f);rejected(guessed);assert.ok(guessed.errors.some(e=>e.code==='CURRENCY'));
+    pending(f,'currency_unknown');f.answer.expected.currency=null;
+    const unknown=await check(f);assert.equal(unknown.ok,true,JSON.stringify(unknown));
+  }
+});
+
+test('已批准映射命中后标准币种须一致，不能换成别的币种或丢失已知证据', async t => {
+  const f=createFixture(t);f.rule.currency_map={'人民币':'CNY'};f.answer.raw.currency_text='人民币';
+  for(const currency of ['USD',null]) {
+    f.answer.expected.currency=currency;
+    if(currency===null)pending(f,'currency_unknown');
+    const r=await check(f);rejected(r);assert.ok(r.errors.some(e=>e.code==='CURRENCY'));
+  }
+});
+
+test('币种映射只取答案绑定的格式规则，不能借其他规则的批准', async t => {
+  const f=createFixture(t),other=structuredClone(f.rule);
+  other.id='unbound-rule';other.format_key='other-format';other.currency_map={'人民币':'CNY'};
+  f.bundle.rules.push(other);f.answer.raw.currency_text='人民币';
+  const r=await check(f);rejected(r);assert.ok(r.errors.some(e=>e.code==='CURRENCY'));
+});
+
+test('币种映射拒绝空别名、带边空白别名、ISO覆盖和非大写标准代码', async t => {
+  const f=createFixture(t);
+  for(const map of [{'':'CNY'},{' ':'CNY'},{' 人民币':'CNY'},{'人民币 ':'CNY'},{USD:'CNY'},{usd:'CNY'},{'人民币':'cny'},{'156':'人民币'},{'人民币':null}]) {
+    f.rule.currency_map=map;
+    const r=await check(f);rejected(r);
+    assert.ok(r.errors.some(e=>['SCHEMA','RULE','CURRENCY'].includes(e.code)));
+  }
+});
+
+test('批准的外币别名保留实际ISO币种且可作为外币覆盖见证', async t => {
+  const f=createFixture(t);f.rule.currency_map={'美元':'USD'};f.answer.raw.currency_text=' 美元 ';
+  f.answer.expected.currency='USD';pending(f,'currency_unsupported');f.answer.coverage=['currency_foreign'];
+  const r=await check(f);assert.equal(r.ok,true,JSON.stringify(r));
+  assert.equal(f.answer.raw.currency_text,' 美元 ');
+  f.answer.expected.currency='CNY';
+  const replaced=await check(f);rejected(replaced);assert.ok(replaced.errors.some(e=>e.code==='CURRENCY'));
+});
+
+test('批准映射覆盖不能由普通ISO、无映射或无批准的中文行冒充', async t => {
+  const f=createFixture(t);f.answer.layer='B';f.answer.review=approved();f.answer.coverage=['currency_mapped_cny'];
+  const plain=await check(f);rejected(plain);assert.ok(plain.errors.some(e=>e.code==='COVERAGE'));
+  f.answer.raw.currency_text='人民币';
+  rejected(await check(f));
+  f.rule.currency_map={'人民币':'CNY'};f.rule.review=unreviewed();
+  rejected(await check(f));
+  f.rule.review=approved();
+  const mapped=await check(f);assert.equal(mapped.ok,true,JSON.stringify(mapped));
+});
+
+test('批准后的币种映射变化仍使旧外部bundle哈希失效', async t => {
+  const f=createReleaseFixture(t),oldPin=f.expectedBundleSha256;
+  f.pairs.get('currency-mapped').rule.currency_map['人民币元']='CNY';f.save();
+  const r=await validateDataset(f.bundlePath,{sourceRoot:f.sourceRoot,release:true,expectedBundleSha256:oldPin});
+  rejected(r);assert.ok(r.errors.some(e=>e.code==='HASH'&&e.at==='bundle'));
+});
+
+test('时间区间和负偏移歧义须用独立time_ambiguous原因待核，原文不改写', async t => {
+  const f=createFixture(t);pending(f,'time_ambiguous');f.answer.expected.txn_time=null;
+  f.answer.coverage=['time_ambiguous'];
+  for(const raw of ['2026-11-18 08:00-09:00','08:00-09:00','2026-11-18 08:00:00-09:00:00','2026-11-18 08:00:00 - 2026-11-18 09:00:00']) {
+    f.answer.raw.txn_time_text=raw;
+    const r=await check(f);assert.equal(r.ok,true,JSON.stringify(r));
+    assert.equal(f.answer.raw.txn_time_text,raw);
+  }
+});
+
+test('时间区间不能借通用时间或时区原因通过，也不能计入时区覆盖', async t => {
+  const f=createFixture(t);f.answer.raw.txn_time_text='2026-11-18 08:00-09:00';
+  f.answer.expected.txn_time=null;f.answer.coverage=[];
+  for(const reason of ['timezone_marker','time_missing']) {
+    pending(f,reason);
+    const r=await check(f);rejected(r);assert.ok(r.errors.some(e=>e.code==='TIME'));
+  }
+  pending(f,'time_ambiguous');f.answer.coverage=['time_timezone_marker'];
+  const wrongCoverage=await check(f);rejected(wrongCoverage);assert.ok(wrongCoverage.errors.some(e=>e.code==='COVERAGE'));
+});
+
+test('删除区间覆盖也不允许把任一端点当作已确认交易时刻', async t => {
+  const f=createFixture(t);f.answer.raw.txn_time_text='2026-11-18 08:00-09:00';
+  f.answer.layer='B';f.answer.review=approved();assert.deepEqual(f.answer.coverage,[]);
+  for(const time of ['2026-11-18 08:00:00','2026-11-18 09:00:00']) {
+    f.answer.expected.txn_time=time;
+    const r=await check(f);rejected(r);assert.ok(r.errors.some(e=>e.code==='TIME'));
+  }
+});
+
+test('明确时区标记仍识别Z、UTC、GMT和ISO正负各精度偏移', async t => {
+  const f=createFixture(t);pending(f,'timezone_marker');f.answer.expected.txn_time=null;
+  f.answer.coverage=['time_timezone_marker'];
+  for(const raw of ['2026-11-18 08:00:00Z','2026-11-18 08:00 UTC','GMT 2026-11-18 08:00','2026-11-18 08:00+08','2026-11-18 08:00+0800','2026-11-18 08:00+08:00','2026-11-18 08:00-0500','2026-11-18 08:00-05','2026-11-18T08:00-09:00','2026-11-18T08:00:00-09:00']) {
+    f.answer.raw.txn_time_text=raw;
+    const r=await check(f);assert.equal(r.ok,true,JSON.stringify(r));
+  }
+  f.answer.coverage=['time_ambiguous'];
+  const wrong=await check(f);rejected(wrong);assert.ok(wrong.errors.some(e=>e.code==='COVERAGE'));
+});
+
+test('不同日期分隔符与多空格不能漏掉明确时区，斜线日期区间保持含义待核', async t => {
+  const f=createFixture(t);
+  for(const raw of ['2026/11/18 08:00+08:00','2026/11/18 08:00Z','2026-11-18   08:00Z']) {
+    f.answer.raw.txn_time_text=raw;pending(f,'timezone_marker');
+    f.answer.expected.txn_time=null;f.answer.coverage=['time_timezone_marker'];
+    const valid=await check(f);assert.equal(valid.ok,true,JSON.stringify(valid));
+    f.answer.coverage=[];f.answer.expected.txn_time='2026-11-18 08:00:00';
+    f.answer.expected.status='confirmed';f.answer.expected.pending_reason=[];
+    const guessed=await check(f);rejected(guessed);assert.ok(guessed.errors.some(e=>e.code==='TIME'));
+  }
+  f.answer.raw.txn_time_text='2026/11/18 08:00-09:00';
+  f.answer.expected.txn_time=null;pending(f,'time_ambiguous');f.answer.coverage=['time_ambiguous'];
+  const range=await check(f);assert.equal(range.ok,true,JSON.stringify(range));
+  pending(f,'timezone_marker');f.answer.coverage=[];
+  const wrong=await check(f);rejected(wrong);assert.ok(wrong.errors.some(e=>e.code==='TIME'));
+});
+
+test('带尾注和不同分隔的时间区间仍须含义待核，不能被当作偏移或端点', async t => {
+  const f=createFixture(t);
+  for(const raw of ['08:00-09:00（班次）','08:00 - 09:00 交易','08:00至09:00（班次）','08:00～09:00 备注','2026-11-18 08:00:00 - 2026-11-19 09:00:00（跨日）','2026-11-18T08:00:00-09:00:00（区间）']) {
+    f.answer.raw.txn_time_text=raw;pending(f,'time_ambiguous');f.answer.expected.txn_time=null;
+    f.answer.coverage=['time_ambiguous'];
+    const valid=await check(f);assert.equal(valid.ok,true,JSON.stringify({raw,...valid}));
+    assert.equal(f.answer.raw.txn_time_text,raw);
+    f.answer.coverage=[];f.answer.expected.txn_time='2026-11-18 08:00:00';
+    f.answer.expected.status='confirmed';f.answer.expected.pending_reason=[];
+    const guessed=await check(f);rejected(guessed);assert.ok(guessed.errors.some(e=>e.code==='TIME'));
+  }
+});
+
+test('时间后紧邻偏移和Z带括号或尾注仍是明确时区，不能静默确认', async t => {
+  const f=createFixture(t);
+  for(const raw of ['2026-11-18T08:00:00+08:00（北京时间）','2026-11-18 08:00:00+08:00 交易','08:00+08（备注）','08:00+0800 交易','08:00Z（原始时间）','2026-11-18T08:00:00-05:00 交易']) {
+    f.answer.raw.txn_time_text=raw;pending(f,'timezone_marker');f.answer.expected.txn_time=null;
+    f.answer.coverage=['time_timezone_marker'];
+    const valid=await check(f);assert.equal(valid.ok,true,JSON.stringify({raw,...valid}));
+    assert.equal(f.answer.raw.txn_time_text,raw);
+    f.answer.coverage=[];f.answer.expected.txn_time='2026-11-18 08:00:00';
+    f.answer.expected.status='confirmed';f.answer.expected.pending_reason=[];
+    const guessed=await check(f);rejected(guessed);assert.ok(guessed.errors.some(e=>e.code==='TIME'));
+  }
+});
+
+test('空格分隔负冒号偏移带尾注仍须独立歧义原因，不能冒充明确时区', async t => {
+  const f=createFixture(t);f.answer.raw.txn_time_text='2026-11-18 08:00:00-05:00 交易';
+  pending(f,'time_ambiguous');f.answer.expected.txn_time=null;f.answer.coverage=['time_ambiguous'];
+  const valid=await check(f);assert.equal(valid.ok,true,JSON.stringify(valid));
+  pending(f,'timezone_marker');f.answer.coverage=[];
+  const wrong=await check(f);rejected(wrong);assert.ok(wrong.errors.some(e=>e.code==='TIME'));
+});
+
+test('时间后非紧邻的完整偏移或缩写不能被备注掩盖，须保留含义待核', async t => {
+  const f=createFixture(t);
+  for(const raw of ['08:00 备注+08:00','08:00 交易备注 +0800','08:00 备注-05','08:00 备注JST','08:00 备注 CST']) {
+    f.answer.raw.txn_time_text=raw;pending(f,'time_ambiguous');f.answer.expected.txn_time=null;
+    f.answer.coverage=['time_ambiguous'];
+    const valid=await check(f);assert.equal(valid.ok,true,JSON.stringify({raw,...valid}));
+    f.answer.coverage=[];f.answer.expected.txn_time='2026-11-18 08:00:00';
+    f.answer.expected.status='confirmed';f.answer.expected.pending_reason=[];
+    const guessed=await check(f);rejected(guessed);assert.ok(guessed.errors.some(e=>e.code==='TIME'));
+  }
+});
+
+test('备注单号和日期连字符不属于完整偏移，不能把普通本地时间强制待核', async t => {
+  const f=createFixture(t);
+  for(const raw of ['08:00 单号123456','08:00-123456','08:00 单号+123456','08:00 备注+08:001','2026-11-18','2026-11-18 08:00:00（交易时间）']) {
+    f.answer.raw.txn_time_text=raw;
+    const valid=await check(f);assert.equal(valid.ok,true,JSON.stringify({raw,...valid}));
+    assert.equal(f.answer.expected.status,'confirmed');
+  }
+});
+
+test('Z和缩写必须是完整token，Zebra、BCST和嵌入英文单词不误判', async t => {
+  const f=createFixture(t);
+  for(const raw of ['08:00 Zebra','08:00Zebra','08:00 BCST','08:00 CSTX','08:00 abcJST','08:00 JST_code','08:00 Z123','08:00 Z:12','08:00 Z.12']) {
+    f.answer.raw.txn_time_text=raw;
+    const valid=await check(f);assert.equal(valid.ok,true,JSON.stringify({raw,...valid}));
+  }
+});
+
+test('固定多义缩写名单大小写无关，须time_ambiguous且可提供缩写覆盖见证', async t => {
+  const f=createFixture(t);f.answer.coverage=['time_zone_abbreviation'];f.answer.expected.txn_time=null;
+  for(const abbreviation of ['CST','IST','EST','PST','BST','AST','GST','MST'])for(const token of [abbreviation,abbreviation.toLowerCase()]) {
+    f.answer.raw.txn_time_text='2026-11-18 08:00 '+token;pending(f,'time_ambiguous');
+    const valid=await check(f);assert.equal(valid.ok,true,JSON.stringify({token,...valid}));
+  }
+  pending(f,'timezone_marker');
+  const wrong=await check(f);rejected(wrong);assert.ok(wrong.errors.some(e=>e.code==='TIME'));
+});
+
+test('固定明确缩写名单大小写无关，仍须时区待核且可提供缩写覆盖见证', async t => {
+  const f=createFixture(t);f.answer.coverage=['time_zone_abbreviation'];f.answer.expected.txn_time=null;
+  for(const abbreviation of ['UTC','GMT','JST','KST','HKT','SGT','AEST','AEDT','CET','CEST','MSK'])for(const token of [abbreviation,abbreviation.toLowerCase()]) {
+    f.answer.raw.txn_time_text='2026-11-18 08:00 '+token;pending(f,'timezone_marker');
+    const valid=await check(f);assert.equal(valid.ok,true,JSON.stringify({token,...valid}));
+  }
+  pending(f,'time_ambiguous');
+  const wrong=await check(f);rejected(wrong);assert.ok(wrong.errors.some(e=>e.code==='TIME'));
+});
+
+test('删除缩写覆盖标签也不能将CST或JST悄悄当成本地时间确认', async t => {
+  const f=createFixture(t);
+  for(const raw of ['2026-11-18 08:00 CST','2026-11-18 08:00 JST','2026-11-18 08:00 cst']) {
+    f.answer.raw.txn_time_text=raw;
+    const guessed=await check(f);rejected(guessed);assert.ok(guessed.errors.some(e=>e.code==='TIME'));
+  }
+});
+
+test('缩写覆盖要求真实名单token，普通时间、数字偏移和相似单词不能冒充', async t => {
+  const f=createFixture(t);f.answer.coverage=['time_zone_abbreviation'];f.answer.expected.txn_time=null;
+  for(const raw of ['2026-11-18 08:00:00','08:00+08:00','08:00 Zebra','08:00 BCST',null]) {
+    f.answer.raw.txn_time_text=raw;pending(f,'timezone_marker');
+    const invalid=await check(f);rejected(invalid);assert.ok(invalid.errors.some(e=>e.code==='COVERAGE'));
+  }
+});
+
+test('区间和非紧邻缩写优先按歧义分类，缩写覆盖仍检查最终原因', async t => {
+  const f=createFixture(t);f.answer.coverage=['time_zone_abbreviation'];f.answer.expected.txn_time=null;
+  for(const raw of ['08:00-09:00（JST班次）','08:00 备注JST','08:00至09:00 UTC']) {
+    f.answer.raw.txn_time_text=raw;pending(f,'time_ambiguous');
+    const valid=await check(f);assert.equal(valid.ok,true,JSON.stringify({raw,...valid}));
+    pending(f,'timezone_marker');
+    const wrong=await check(f);rejected(wrong);assert.ok(wrong.errors.some(e=>e.code==='TIME'));
+  }
+});
+
+test('第41项冻结覆盖不能只靠其他时间项，两个缩写见证均移除时拒绝', async t => {
+  const f=createReleaseFixture(t);
+  f.pairs.get('time-zone-abbreviation').row.coverage=[];
+  f.pairs.get('time-zone-abbreviation-ambiguous').row.coverage=[];
+  const result=await validateDataset(f.bundlePath,{sourceRoot:f.sourceRoot,release:true,expectedBundleSha256:f.pin()});
+  rejected(result);assert.ok(result.errors.some(e=>e.code==='COVERAGE'&&e.at==='time_zone_abbreviation'));
+});
+
+test('普通批准币种映射行仅承担amount_a覆盖时仍能留在A层', async t => {
+  const f=createFixture(t);f.rule.currency_map={'人民币':'CNY'};
+  f.answer.raw.currency_text='人民币';f.answer.coverage=['amount_a'];
+  const valid=await check(f);assert.equal(valid.ok,true,JSON.stringify(valid));
+  assert.equal(f.answer.layer,'A');assert.equal(f.answer.expected.status,'confirmed');
 });

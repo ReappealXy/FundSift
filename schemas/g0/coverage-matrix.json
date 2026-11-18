@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "matrix_version": 2,
+  "schema_version": 3,
+  "matrix_version": 4,
   "cases": [
     {
       "id": "amount_a",
@@ -272,7 +272,7 @@
       "reference": "docs/02 §1 首版币种边界；docs/04 Q08",
       "kind": "row",
       "min_count": 1,
-      "description": "原始币种字段含可核对的非 CNY 三字母代码，比较时仅忽略首尾空格和大小写，原文仍保留；期望保留实际币种、显式提示不支持或不纳入人民币合计，不能默认 CNY 或把外币金额混入人民币汇总；文件与行的发布处置仍依待确认的 Q06 策略，不由本矩阵另定。"
+      "description": "原始币种字段含可核对的非 CNY 三字母代码，或非 ISO 原文通过绑定格式已批准的 currency_map 映射为非 CNY；三字母代码比较仅忽略首尾空格和大小写，别名仅 trim 后精确匹配，原文仍保留。期望保留实际币种、显式提示不支持或不纳入人民币合计，不能默认 CNY 或把外币金额混入人民币汇总；文件与行的发布处置仍依待确认的 Q06 策略，不由本矩阵另定。"
     },
     {
       "id": "currency_missing_verified",
@@ -296,7 +296,7 @@
       "reference": "docs/03 §6.3 时间口径",
       "kind": "row",
       "min_count": 1,
-      "description": "原始 txn_time_text 含 ISO 时区偏移、Z 后缀或明确的 UTC/GMT 标记，例如 2026-03-01T10:00:00+08:00；第一片不能按本地无时区时间直接解释。原文完整保留，期望 txn_time=null、status=pending，并有含 time 或 timezone 的独立待核原因；不静默转换为本地时间，也不借缺时间标签代替该见证。"
+      "description": "原始 txn_time_text 含明确的 ISO 时区偏移、完整 Z 标记或本契约归为明确时区的缩写；允许标记后的括号、尾注或备注，例如 2026-11-18T08:00:00+08:00（北京时间）。先排除区间及含义不明的标记，不把区间端点当负偏移，不把非紧邻时间且夹有文字的偏移当明确时区。原文完整保留，期望 txn_time=null、status=pending，并有包含 time 或 timezone 且不是 time_ambiguous 的独立待核原因；不静默转换为本地时间，也不借缺时间标签代替该见证。"
     },
     {
       "id": "amount_unparseable",
@@ -305,6 +305,30 @@
       "kind": "row",
       "min_count": 1,
       "description": "原始金额文本非空，但不符合本版可核对的十进制金额格式，例如 N/A、—、全角数字；单金额类别检查 raw_amount_text，D 类检查实际收入/支出列，任一非空列无法解析即不能借另一列猜测金额。原文完整保留，不自动规范化全角字符、不转成零；期望 amount=null、status=pending，并有含 amount 或 format 的独立待核原因。该项与原文为空的 missing_amount 分开计数。"
+    },
+    {
+      "id": "time_ambiguous",
+      "title": "时间区间、缩写或偏移含义未定",
+      "reference": "docs/03 §6.3 时间口径；用户批准的时间歧义处理",
+      "kind": "row",
+      "min_count": 1,
+      "description": "原始时间为区间（包括括号、尾注或备注）、存在区间与负时区偏移歧义、命中本契约的多义缩写，或时间后夹有文字才出现偏移等标记，例如 08:00-09:00（班次）、08:00 CST、08:00 备注+08:00。保留原文，期望 txn_time=null、status=pending，并有独立 reason_code=time_ambiguous。不得自动取起点或终点，也不把该行计入 time_timezone_marker 覆盖。"
+    },
+    {
+      "id": "currency_mapped_cny",
+      "title": "批准的格式币种映射确认人民币",
+      "reference": "docs/02 §1 首版币种边界；用户批准的按格式币种映射",
+      "kind": "row",
+      "min_count": 1,
+      "description": "非空非 ISO 原始币种文本（如人民币或156）经 trim 后精确命中绑定格式规则的 currency_map，且该规则版本 review 已批准；期望 currency=CNY，并保留原文及映射批准依据。已有三字母 ISO 证据优先且不能被映射改写；未命中、未批准或缺失原文不能借映射默认 CNY。"
+    },
+    {
+      "id": "time_zone_abbreviation",
+      "title": "时区缩写按固定分类保留待核",
+      "reference": "docs/03 §6.3 时间口径；用户批准的缩写名单与分类",
+      "kind": "row",
+      "min_count": 1,
+      "description": "原始 txn_time_text 须实际命中固定名单内的完整缩写，大小写不敏感且有整词边界，BCST、Zebra 等不能冒充；多义名单 CST/IST/EST/PST/BST/AST/GST/MST，明确标记名单 UTC/GMT/JST/KST/HKT/SGT/AEST/AEDT/CET/CEST/MSK。名单是本契约固定处理口径，不断言缩写在全球单义。期望 txn_time=null、status=pending，原因须与最终时间分类一致：多义缩写、区间或夹有文字的非紧邻标记最终为 ambiguous 时必须有独立 reason_code=time_ambiguous；明确相邻缩写最终为 timezone 时须有包含 time 或 timezone 且不是 time_ambiguous 的独立原因。原文不改写，不换算，不允许仅贴标签或用数值偏移/Z 标记凑此缩写见证。"
     }
   ]
 }
