@@ -104,7 +104,7 @@
       <div class="nav-group">${[['materials','files'],['flows','table'],['review','alert'],['exports','download']].map(([r,i])=>`<button class="nav-item ${state.route===r?'active':''}" data-action="nav" data-route="${r}" ${state.route===r?'aria-current="page"':''} ${!canOpen||locked?'disabled':''}>${ico(i)}<span class="nav-label">${labels[r]}</span></button>`).join('')}</div></nav>
       <div class="sidebar-bottom"><button class="nav-item" data-action="help" title="${copy.terms.help}" ${locked?'disabled':''}>${ico('help')}<span class="nav-label">${copy.terms.help}</span></button><div class="demo-chip desktop-chip"><span class="dot"></span>本地桌面版 · 案件管理</div></div>`;
     $('#topbar').innerHTML=`<div class="breadcrumb"><button data-action="nav" data-route="home" aria-label="返回工作台" ${locked?'disabled':''}>${ico('home',15)}</button>${ico('chevronRight',11)}${state.route!=='home'&&c?`<span class="truncate">${esc(c.name)}</span>${ico('chevronRight',11)}`:''}<strong>${labels[state.route]}</strong></div><div class="top-right"><button class="global-search" data-action="global-search" ${!ready||locked?'disabled':''}>${ico('search',16)}搜索案件名称、编号<kbd>Ctrl K</kbd></button><span class="local-tag">${ico('shield',13)}本地桌面版</span><span class="avatar" title="内部使用">内</span></div>`;
-    $('#statusbar').innerHTML=`<span><span class="dot"></span>${desktop.loading?copy.home.loading:desktop.error?copy.home.readFailed:desktop.needsWorkspace?'尚未设置数据存放位置':'本地桌面版'}</span><span class="divider"></span><span>${desktop.loading||desktop.error?'案件数量待读取':state.route==='home'?`${data.cases.length} 个已登记案件`:esc(c?.number||'未打开案件')}</span><span class="last" title="${esc(desktop.workspacePath||'')}">${esc(desktop.workspacePath||copy.home.locationUnset)}</span>`;
+    $('#statusbar').innerHTML=`<span><span class="dot"></span>${desktop.loading?copy.home.loading:desktop.error?copy.home.readFailed:desktop.needsWorkspace?'尚未设置数据存放位置':'本地桌面版'}</span><span class="divider"></span><span>${desktop.loading||desktop.error?'案件数量待读取':state.route==='home'?`${data.cases.length} 个已登记案件`:esc(c?.number||'未打开案件')}</span><span class="last" title="${esc(desktop.workspacePath||'')}">${esc(desktop.workspacePath||'')}</span>`;
     document.title=`东启勘流 · ${labels[state.route]}`;
   }
   function desktopPage(){
@@ -466,7 +466,7 @@
     const panel=document.createElement('div');
     panel.id='desktop-operation-status';panel.className='desktop-operation-status';panel.hidden=true;
     panel.setAttribute('role','status');panel.setAttribute('aria-live','polite');panel.setAttribute('aria-atomic','true');
-    document.body.append(panel);
+    $('#feedback-root').prepend(panel);
     const unsubscribe=desktopBridge.onOperationStatus(showOperationStatus);
     window.addEventListener('pagehide',()=>{if(typeof unsubscribe==='function')unsubscribe();desktopOperations.clear();panel.remove();},{once:true});
   }
