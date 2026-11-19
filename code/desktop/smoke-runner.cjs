@@ -38,6 +38,11 @@ async function run({ app, window, worker, config, getState, saveSettings, setWor
     }
     throw new Error('Renderer did not reach expected state: ' + expression);
   };
+  const openReview = async row => {
+    const selector = `[data-action=desktop-review-open][data-id="${row.id}"]`;
+    await js(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    await wait('document.querySelector(".manual-review-facts") !== null');
+  };
   const enterIntro = async () => {
     await js('document.querySelector("#enter-workspace").click()');
     await wait('document.querySelector("#intro-screen").hidden && !document.querySelector("#application").inert && !document.body.classList.contains("intro-departing")');
@@ -67,7 +72,7 @@ async function run({ app, window, worker, config, getState, saveSettings, setWor
       const backups = await fs.readdir(path.join(folder, 'backup'));
       verify(backups.length === 1, 'one versioned backup for ' + path.basename(folder));
       const manifest = JSON.parse(await fs.readFile(path.join(folder, 'backup', backups[0], 'manifest.json'), 'utf8'));
-      const targetVersion = folder === config.workspace ? 2 : 3;
+      const targetVersion = folder === config.workspace ? 2 : 4;
       verify(manifest.result === 'upgraded' && manifest.targetVersion === targetVersion && /^[0-9a-f]{64}$/.test(manifest.sha256), 'verified backup manifest for ' + manifest.kind);
     }
     await getState();
@@ -172,7 +177,7 @@ async function run({ app, window, worker, config, getState, saveSettings, setWor
     verify(await js('document.querySelectorAll(".desktop-materials tbody tr").length===4'), 'three published materials and the failed material survive reopen');
     await js('document.querySelector("[data-action=nav][data-route=flows]").click()');
     await wait('document.querySelectorAll(".desktop-ledger tbody tr").length===6');
-    verify(await js('document.querySelector(".desktop-ledger").textContent.includes("-1.01") && !document.querySelector("[data-action=confirm-amount]")'), 'real DB amount is precise and desktop review cannot edit');
+    verify(await js('document.querySelector(".desktop-ledger").textContent.includes("-1.01") && !document.querySelector("[data-action=confirm-amount]")'), 'real DB amount is precise and desktop uses only its real review controls');
     await js('document.querySelector("[data-action=desktop-source]").click()');
     await wait('document.querySelector(".raw-evidence tbody tr") !== null');
     verify(await js('document.querySelector(".modal").textContent.includes("归档原件已核验") && document.querySelector(".source-hash").textContent.includes("SHA256")'), 'real archive source is verified and viewable');
@@ -182,11 +187,27 @@ async function run({ app, window, worker, config, getState, saveSettings, setWor
     verify(await js('document.querySelector(".modal").textContent.includes("同一付款记录候选") && document.querySelector(".modal").textContent.includes("不合并、不去重、不计算净额")'), 'cross-platform candidate evidence keeps source records');
     await js('document.querySelector(".modal-head [data-action=close-modal]").click()');
     await js('document.querySelector("[data-action=nav][data-route=review]").click()');
-    await wait('document.querySelectorAll(".desktop-ledger tbody tr").length===3');
-    verify(await js('document.querySelector(".desktop-flows").textContent.includes("待核只读清单") && !document.querySelector("[data-action=confirm-amount]")'), 'pending query isolates three real unresolved records');
+    const pendingCount = config.phase === 'create' ? 3 : 2;
+    await wait(`document.querySelectorAll(".desktop-ledger tbody tr").length===${pendingCount}`);
+    verify(await js('document.querySelector(".desktop-flows").textContent.includes("待核清单") && !document.querySelector("[data-action=confirm-amount]")'), `pending query isolates ${pendingCount} unresolved records`);
+    const caseId = (await getState()).currentCaseId;
+    const refund = (await worker.request('queryFlows', caseId)).rows.find(row => row.summary === '消费退货');
     if(config.phase==='create'){
       await js('document.querySelector("#toast-root").replaceChildren()');
       window.setContentSize(1024,720);
+      await openReview(refund);
+      await js('document.querySelector("[data-action=desktop-review-resolve]").click()');
+      await js(`document.querySelector('#manual-review-operator').value='合成验收员';
+        document.querySelector('#manual-review-evidence').value='合成余额由 20.12 变为 21.12';
+        document.querySelector('#manual-review-amount').value='1.00';
+        document.querySelector('#manual-review-direction').value='进'`);
+      await js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+      await fs.writeFile(config.screenshot.replace('.png','-review1024.png'),(await window.webContents.capturePage()).toPNG());
+      await js('document.querySelector("[data-action=desktop-review-save]").click()');
+      await wait('document.querySelector("#manual-review-result")?.textContent.includes("已确认金额和方向") && !document.querySelector(".modal-head button").disabled');
+      verify(await js('document.querySelector(".manual-review-facts").textContent.includes("1.00") && document.querySelector(".manual-review-reasons").textContent.includes("已解除") && document.querySelector(".manual-review-history").textContent.includes("合成验收员")'), 'renderer confirms the refund, shows its resolved reason and retains the evidence');
+      await js('document.querySelector(".modal-head [data-action=close-modal]").click()');
+      await wait('document.querySelectorAll(".desktop-ledger tbody tr").length===2');
       await js('document.querySelector("[data-action=nav][data-route=flows]").click()');
       await wait('document.querySelectorAll(".desktop-ledger tbody tr").length===6');
       await js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
@@ -210,11 +231,21 @@ async function run({ app, window, worker, config, getState, saveSettings, setWor
       const workpaper = path.join(config.exportFolder, exported[0]);
       await workbook.xlsx.readFile(workpaper);
       verify(workbook.getWorksheet('流水明细')?.rowCount === 7 && workbook.getWorksheet('导出说明'), 'packaged export reopens with six effective records and the explanation sheet');
-      const headers = workbook.getWorksheet('流水明细').getRow(1).values;
+      const ledger = workbook.getWorksheet('流水明细');
+      const headers = ledger.getRow(1).values;
       verify(['原始金额单位', '原件收付记载', '原件记载说明', '摘要', '交易类型', '本方名称', '对方名称', '是否计入经济收支'].every(header => headers.includes(header)), 'reopened workbook includes transfer and source evidence columns');
+      const exportRefund = ledger.getRows(2, 6).find(row => row.getCell(headers.indexOf('摘要')).value === '消费退货');
+      verify(exportRefund.getCell(headers.indexOf('标准金额（元）')).value === null && exportRefund.getCell(headers.indexOf('全部待核原因码')).value === 'sign_semantics_undefined', 'rule workpaper retains the import result after renderer review');
       await fs.copyFile(workpaper, config.screenshot.replace('.png', '-workpaper.xlsx'));
       await fs.writeFile(config.screenshot.replace('.png','-workpaper1024.png'),(await window.webContents.capturePage()).toPNG());
       window.setContentSize(1440,960);
+    } else {
+      verify(refund.amount === '100' && refund.direction === '进' && refund.status === 'confirmed', 'the manual amount and direction persist after restart');
+      await js('document.querySelector("[data-action=nav][data-route=flows]").click()');
+      await wait('document.querySelectorAll(".desktop-ledger tbody tr").length===6');
+      await openReview(refund);
+      verify(await js('document.querySelector(".manual-review-history")?.textContent.includes("合成余额由 20.12 变为 21.12") && document.querySelector(".manual-review-history").textContent.includes("合成验收员")'), 'renderer reopens the saved review history');
+      await js('document.querySelector(".modal-head [data-action=close-modal]").click()');
     }
   }
   if (config.phase === 'reopen') {
@@ -226,6 +257,16 @@ async function run({ app, window, worker, config, getState, saveSettings, setWor
       await wait('!document.querySelector("#modal-root .modal") && document.querySelector("#sidebar .case-label").textContent === ' + JSON.stringify(item.number));
     };
     await chooseCase(second);
+    await js('document.querySelector("[data-action=nav][data-route=review]").click()');
+    await wait('document.querySelector("[data-action=desktop-review-open]:not(:disabled)") !== null');
+    const oldFlow = (await worker.request('queryFlows', second.id)).rows[0];
+    await openReview(oldFlow);
+    verify(await js('!document.querySelector("[data-action=desktop-review-resolve]") && document.querySelector("#manual-review-evidence")'), 'Alipay pending flow offers a note without amount or direction confirmation');
+    await js(`document.querySelector('#manual-review-operator').value='合成验收员';
+      document.querySelector('#manual-review-evidence').value='旧批次核查说明';
+      document.querySelector('[data-action=desktop-review-save]').click()`);
+    await wait('document.querySelector("#manual-review-result")?.textContent.includes("说明已保存") && !document.querySelector(".modal-head button").disabled');
+    await js('document.querySelector(".modal-head [data-action=close-modal]").click()');
     await js('document.querySelector("[data-action=nav][data-route=materials]").click()');
     await wait('document.querySelector("[data-action=desktop-reimport-material]:not(:disabled)") !== null');
     const before = (await worker.request('listMaterials', second.id)).materials[0];
@@ -235,6 +276,11 @@ async function run({ app, window, worker, config, getState, saveSettings, setWor
     const after = (await worker.request('listMaterials', second.id)).materials[0];
     verify(after.id === before.id && after.currentBatchId !== before.currentBatchId && after.ruleVersion === '2' && !after.canReimport,
       'reimport switches the effective result to rule v2 for the same original material');
+    verify(await js('document.querySelector(".material-review-notice")?.textContent.includes("1 条流水有旧批次复核记录，本批次未继承")'), 'materials disclose old review history after reimport');
+    await js('document.querySelector("[data-action=desktop-review-material-history]").click()');
+    await wait('document.querySelector(".manual-review-history")?.textContent.includes("旧批次核查说明")');
+    verify(await js('document.querySelector(".manual-review-history").textContent.includes("旧批次，未继承")'), 'old material review is readable with its original batch label');
+    await js('document.querySelector(".modal-head [data-action=close-modal]").click()');
     await js('document.querySelector("[data-action=nav][data-route=flows]").click()');
     await wait('document.querySelector(".desktop-ledger")?.textContent.includes("内部划转")');
     const flows = await worker.request('queryFlows', second.id);

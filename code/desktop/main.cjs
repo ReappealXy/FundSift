@@ -151,6 +151,9 @@ async function start() {
   register('query-flows', async (caseId, options) => { requireCurrentCase(caseId); return worker.request('queryFlows', caseId, options); });
   register('query-relations', async (caseId, options) => { requireCurrentCase(caseId); return worker.request('queryRelations', caseId, options); });
   register('read-flow-source', async (caseId, options) => { requireCurrentCase(caseId); return worker.request('readFlowSource', caseId, options); });
+  register('get-review', (caseId, flowId) => { requireCurrentCase(caseId); return worker.request('getReview', caseId, flowId); });
+  register('save-review', (caseId, payload) => { requireCurrentCase(caseId); return worker.request('saveReview', caseId, payload); });
+  register('list-review-history', (caseId, sourceFileId) => { requireCurrentCase(caseId); return worker.request('listReviewHistory', caseId, sourceFileId); });
   register('retry-import', async (caseId, sourceFileId) => {
     requireCurrentCase(caseId);
     return worker.request('retryImport', caseId, sourceFileId);
@@ -163,7 +166,7 @@ async function start() {
     activeStatus?.update('confirming-import');
     const confirmation = smokeConfig ? { response: 0 } : await dialog.showMessageBox(window, {
       type: 'question', title: '按支付宝账户规则 v2 重导', message: '应用新版内部划转规则？',
-      detail: `材料：${material.fileName}\n\n软件会从原件归档重导。新批次完整核对通过后才成为当前结果，旧规则和旧批次继续留档。`,
+      detail: `材料：${material.fileName}\n\n软件会从原件归档重导。新批次完整核对通过后才成为当前结果，旧规则和旧批次继续留档。${material.reviewedRows !== '0' ? `\n\n当前批次有 ${material.reviewedRows} 条流水留有人工记录，可在重导后的材料历史中查看。新批次按新规则处理。` : ''}`,
       buttons: ['按新规则重导', '取消'], defaultId: 1, cancelId: 1, noLink: true
     });
     if (confirmation.response !== 0) return { cancelled: true };
@@ -201,7 +204,7 @@ async function start() {
       {key:'ccb-account-32col-v1',name:'32列建行账户交易明细',extension:'xlsx'}
     ];
     const formatChoice = fixture ? {response:formats.findIndex(item=>item.key===fixture.formatKey)} : await dialog.showMessageBox(window, { type: 'question', title: '选择材料格式（技术预览）',
-      message: '本次要导入哪一种材料？', detail: '仅支持列结构与已批准规则一致的材料。完整G0尚未完成；待核只读。支付宝余额明细不属于账户明细格式。',
+      message: '本次要导入哪一种材料？', detail: '仅支持列结构与已批准规则一致的材料。完整G0尚未完成。支付宝余额明细不属于账户明细格式。',
       buttons: ['支付宝账户 CSV', '微信交易 TXT', '建行账户 XLSX', '取消'], defaultId: 3, cancelId: 3, noLink: true });
     const format = formats[formatChoice.response];
     if (fixture && !format) throw Object.assign(new Error('隔离烟测格式无效。'), { code:'FS_SMOKE_INPUT' });
@@ -220,7 +223,7 @@ async function start() {
       : '采用支付宝账户规则 v2。使用付款时间、元转分，收入记进、支出记出。证据明确的同主体余额转余额宝记录标为内部划转，保留账户变动证据，排除经济收支。无法确认的方向和关闭交易继续待核。';
     const confirmation = fixture ? {response:0} : await dialog.showMessageBox(window, { type: 'question', title: '确认本次材料与处理范围',
       message: bank ? '请确认采用本格式的保守处理规则。' : '请确认所选材料中的金额全部为人民币。',
-      detail: `文件：${path.basename(choice.filePaths[0])}\n格式：${format.name}\n\n${policy}\n\n技术预览：完整G0尚未完成，待核只读，不自动合并或去重。${bank ? '币种按原文与批准映射处理，不作人民币默认推断。' : '确认即表示你已根据这份材料的来源核实币种为人民币；仅凭金额单位或列名不能确认币种。'}`,
+      detail: `文件：${path.basename(choice.filePaths[0])}\n格式：${format.name}\n\n${policy}\n\n技术预览：完整G0尚未完成。导入结果的待核原因可在异常复核页查看。${bank ? '币种按原文与批准映射处理。' : '请根据材料来源核实币种为人民币。'}`,
       buttons: [bank ? '按此规则导入' : '确认人民币并导入', '取消'], defaultId: 1, cancelId: 1, noLink: true });
     if (confirmation.response !== 0) return { cancelled: true };
     requireCurrentCase(caseId);

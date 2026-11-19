@@ -380,6 +380,9 @@ function installScopeGuards(db, scope) {
     import_check: allowedCheck, format_rule: () => '0', case_info: () => '0',
     desktop_case_identity: () => '0', case_data_state: () => '0', case_summary: () => '0'
   };
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='review_event'").get()) {
+    tables.review_event = scope.source ? () => '0' : allowedReference;
+  }
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='format_rule_config'").get()) {
     tables.format_rule_config = () => '0';
     // An unassociated staging ledger is registered through the explicit full
@@ -454,6 +457,16 @@ function validateScope(db, record, scope) {
       (f.status='pending' AND NOT EXISTS(SELECT 1 FROM pending_reason p WHERE p.fund_flow_id=f.id AND p.resolved_at IS NULL)) OR
       (f.status='confirmed' AND EXISTS(SELECT 1 FROM pending_reason p WHERE p.fund_flow_id=f.id AND p.resolved_at IS NULL))) LIMIT 1`).get();
   if (invalid) fail('FS_CASE_DATA', `本次流水的归属、金额或待核状态不一致（记录 ${invalid.id}），已回滚。`);
+  if (!scope.source && db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='review_event'").get()) {
+    const incompleteReview = db.prepare(`SELECT f.id FROM fund_flow f
+      JOIN review_event e ON e.id=(SELECT latest.id FROM review_event latest
+        WHERE latest.fund_flow_id=f.id ORDER BY latest.id DESC LIMIT 1)
+      WHERE ${clause} AND (e.after_amount IS NOT f.amount OR e.after_direction IS NOT f.direction OR
+        e.after_status IS NOT f.status OR EXISTS(SELECT 1 FROM review_event resolved
+          JOIN pending_reason p ON p.id=resolved.reason_id
+          WHERE resolved.fund_flow_id=f.id AND resolved.action='resolve' AND p.resolved_at IS NOT resolved.reviewed_at)) LIMIT 1`).get();
+    if (incompleteReview) fail('FS_CASE_DATA', `本次复核结果与流水或待核原因不一致（记录 ${incompleteReview.id}），已回滚。`);
+  }
   if (scope.source) {
     const invalidBatch = db.prepare(`SELECT b.id FROM import_batch b
       WHERE b.source_file_id IN (SELECT id FROM temp.fundsift_write_scope) AND b.status='done' AND (
@@ -467,14 +480,21 @@ function validateScope(db, record, scope) {
 // Explicit alternative to runCaseIntegrityTransaction: no integrity_check or
 // all-case flow scan. A source scope covers batch publication/switch/failure;
 // a flow scope covers review of existing records and their pending reasons.
-function runCaseTransaction(db, record, declaredScope, callback) {
+function runCaseTransaction(db, record, declaredScope, callback, { preflight } = {}) {
   if (db.inTransaction) fail('FS_CASE_TRANSACTION', '请在案件事务入口统一管理写入，不能嵌套业务事务。');
   const scope = transactionScope(declaredScope);
-  if (typeof callback !== 'function') fail('FS_CASE_TRANSACTION', '案件事务缺少同步写入操作。');
+  if (typeof callback !== 'function' || (preflight !== undefined && typeof preflight !== 'function')) {
+    fail('FS_CASE_TRANSACTION', '案件事务需要同步校验及写入操作。');
+  }
   if (db.pragma('foreign_keys', { simple: true }) !== 1) fail('FS_CASE_TRANSACTION', '案件写入前必须开启外键保护。');
   let result, accepted = false;
   try {
     db.transaction(() => {
+      if (preflight) {
+        result = preflight(db);
+        if (result && typeof result.then === 'function') fail('FS_CASE_TRANSACTION', '案件事务回调必须同步完成。');
+        if (result !== undefined) return;
+      }
       const previous = readSummary(db, record);
       const baseline = db.prepare('SELECT * FROM case_summary WHERE id=1').get();
       if (previous.summaryState === 'stale' || !baseline ||

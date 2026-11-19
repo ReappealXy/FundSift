@@ -247,7 +247,7 @@ async function main(){
   };
   t.nav('exports');
   const workpaperPanel=t.$('.workpaper-panel').textContent;
-  verify(workpaperPanel.includes('底稿为规则结果')&&workpaperPanel.includes('修改底稿不计为复核')&&!t.$('[data-action="do-export"]'),'Desktop export describes the real workpaper and keeps demo actions hidden');
+  verify(workpaperPanel.includes('Excel 底稿仅含规则结果')&&workpaperPanel.includes('修改底稿不计为复核')&&!t.$('[data-action="do-export"]'),'Desktop export explains that the rule-only workpaper excludes manual reviews');
   verify(workpaperPanel.includes('本地 NTFS 文件夹'),'Desktop export displays the save folder requirement before the dialog');
   t.action('desktop-export-workpaper');t.action('desktop-export-workpaper');
   verify(exportCalls===1&&t.$('.workpaper-panel').getAttribute('aria-busy')==='true','Export stays locked while native selection is pending');
@@ -260,6 +260,90 @@ async function main(){
   completeExport(success({filePath:'D:\\SyntheticExports\\底稿.xlsx',dataVersion:'31',totalRows:2,confirmedRows:1,pendingRows:1,unknownAmountRows:1}));await settle();
   const workpaper=t.$('.workpaper-receipt');
   verify(workpaper.dataset.version==='31'&&workpaper.textContent.includes('底稿.xlsx')&&workpaper.querySelectorAll('dd')[0].textContent==='2','Successful export shows the written file, snapshot version and receipt counts');
+  t.close();
+
+  fixture=bridgeState([caseRow('reviews','人工复核合成案件','REVIEW-01')]);
+  const refund={...ledgerRow,id:'71',amount:null,direction:null,status:'pending',source_loc:'工作表!51',raw_amount_text:'-1.34',raw_direction:'借',summary:'消费退货',raw_record:JSON.stringify({derivation:{money:{source_unit:'元'}}})};
+  const transfer={...refund,id:'72',rule_version:'2',source_loc:'52',raw_amount_text:'15.0',raw_direction:'其它',summary:'余额宝自动转入',raw_record:JSON.stringify({format_key:'alipay-account-17col-v1',derivation:{money:{source_unit:'元'},internal_transfer:{kind:'balance_to_yuebao'}}})};
+  const sign={id:'700',reason_code:'sign_semantics_undefined',detail:'负额符号待核',resolved_at:null};
+  const other={id:'701',reason_code:'time_missing',detail:'交易时间待核',resolved_at:null};
+  const direction={id:'702',reason_code:'direction_unknown',detail:'方向未知',resolved_at:null};
+  const oldEvent={id:'30',action:'note',operator:'旧批次操作人',evidence:'旧依据',reviewed_at:'2026-11-18T01:00:00.000Z',batch_id:'1',rule_version:'1',source_loc:refund.source_loc,current_flow_id:'71'};
+  const pendingSaves=[];
+  let version='11',resolved=false,corrected=false;
+  const histories={'71':[oldEvent],'72':[]};
+  const activeMaterial=()=>({...material,fileName:'合成建行.xlsx',currentBatchId:'3',reviewedRows:'0',previousReviewedRows:'1'});
+  const reviewRows=()=>[{...refund,amount:corrected?'135':resolved?'134':null,direction:resolved?'进':null,pendingReasons:resolved?[other]:[sign,other]},{...transfer,pendingReasons:[direction]}];
+  fixture.bridge.listMaterials=async id=>success({caseId:id,dataVersion:version,materials:[activeMaterial()]});
+  fixture.bridge.queryFlows=async id=>success({caseId:id,dataVersion:version,total:'2',rows:reviewRows(),nextCursor:null});
+  fixture.bridge.getReview=async (caseId,flowId)=>{
+    assert.equal(caseId,'reviews');
+    const row=reviewRows().find(item=>item.id===flowId);
+    const canResolve=row===undefined?false:row.id==='71';
+    const signReason=resolved?{...sign,resolved_at:'2026-11-18T02:00:00Z'}:sign;
+    return success({
+      caseId,flowId,dataVersion:version,batchId:'3',status:row.status,amount:row.amount,direction:row.direction,
+      canNote:true,resolveReasonId:canResolve&&!resolved?'700':null,correctReasonId:canResolve&&resolved?'700':null,
+      internalTransfer:!canResolve,reasons:canResolve?[signReason,other]:[direction],history:histories[flowId],
+      source:{fileName:'合成建行.xlsx',sourceLoc:row.source_loc,standard:{...row,initialRule:canResolve&&resolved?{amount:null,direction:null,status:'pending'}:null},
+        fieldEntries:[{column:13,header:'摘要',value:row.summary}]}
+    });
+  };
+  fixture.bridge.saveReview=(caseId,payload)=>new Promise(resolve=>{
+    assert.equal(caseId,'reviews');
+    pendingSaves.push({payload,finish:result=>resolve(result)});
+  });
+  fixture.bridge.listReviewHistory=async()=>success({currentBatchId:'3',oldReviewCount:1,history:[oldEvent]});
+  const commitReview=(entry,change={})=>{
+    const {payload}=entry;
+    histories[payload.flowId].unshift({
+      id:String(Number(version)+30),action:payload.action,operator:payload.operator,evidence:payload.evidence,
+      before_amount:null,after_amount:payload.action==='resolve'?'134':payload.action==='correct'?'135':null,
+      after_direction:payload.direction,reviewed_at:'2026-11-18T02:00:00Z',batch_id:'3',rule_version:'1',...change
+    });
+    version=String(Number(version)+1);
+    entry.finish(success({case:fixture.state.cases[0],materials:{materials:[activeMaterial()]}}));
+  };
+  t=setup(fixture.bridge);await settle();t.action('open-case');await settle();
+  verify(t.$('.material-review-notice').textContent.includes('1 条流水有旧批次复核记录')&&t.$('[data-action="desktop-review-material-history"]'),'Historical reviews stay accessible after reimport with no current review');
+  t.action('desktop-review-material-history');await settle();
+  verify(t.$('.modal').textContent.includes('当前批次有相符记录')&&t.$('.modal').textContent.includes('本批次未继承'),'Material history identifies old evidence matching the current batch');
+  t.action('close-modal');t.nav('review');await settle();
+  verify(t.$('.desktop-ledger').textContent.includes('业务性质已定（内部划转），方向待定'),'Internal transfer displays the known classification and remaining uncertainty');
+  t.action('desktop-review-open','[data-id="72"]');await settle();
+  verify(t.$('.modal').textContent.includes('本笔只能记说明')&&!t.$('#manual-review-amount'),'Ineligible reasons receive a note form without value controls');
+  t.action('desktop-review-save');
+  verify(t.$('#manual-review-error').textContent.includes('请填写')&&pendingSaves.length===0,'Empty form never submits a review');
+  t.input('#manual-review-operator','核查一');t.input('#manual-review-evidence','<img src=x> 已核对原文');
+  t.action('desktop-review-save');t.action('desktop-review-save');
+  verify(pendingSaves.length===1&&pendingSaves[0].payload.action==='note'&&!Object.hasOwn(pendingSaves[0].payload,'reasonId'),'A note sends no reason mutation and repeated clicks do not resubmit');
+  pendingSaves[0].finish(failure('读取响应中断，请重试。'));await settle();
+  t.action('desktop-review-save');commitReview(pendingSaves[1]);await settle();
+  verify(pendingSaves[0].payload.requestId===pendingSaves[1].payload.requestId,'Retrying an identical payload reuses request identity');
+  verify(t.$('#manual-review-result').textContent==='说明已保存。'&&t.$('.manual-review-reasons').textContent.includes('仍待核')&&t.$('.manual-review-evidence').textContent.includes('<img')&&!t.$('.modal img'),'Note shows exact escaped evidence with remaining status');
+  t.action('close-modal');t.action('desktop-review-open','[data-id="71"]');await settle();
+  verify(t.$('.modal').textContent.includes('消费退货')&&t.$('.modal').textContent.includes('-1.34 元')&&t.$('.modal').textContent.includes('旧批次复核历史'),'Review provides refund source fields and prior-batch history');
+  t.action('desktop-review-resolve');
+  t.input('#manual-review-operator','核查二');t.input('#manual-review-evidence','余额由 0.73 变为 2.07。');
+  t.input('#manual-review-amount','-1.34');t.input('#manual-review-direction','进');
+  t.action('desktop-review-save');
+  verify(t.$('#manual-review-error').textContent.includes('不含正负号')&&pendingSaves.length===2,'Signed amount is rejected by the form');
+  t.input('#manual-review-amount','1.34');
+  t.action('desktop-review-save');
+  verify(pendingSaves[2].payload.reasonId==='700'&&pendingSaves[2].payload.action==='resolve'&&pendingSaves[2].payload.dataVersion==='12','Confirmation targets a single reason using the snapshot version');
+  version='13';
+  pendingSaves[2].finish({ok:false,error:{code:'FS_REVIEW_STALE',message:'数据已更新，请重新读取。'}});await settle();
+  verify(t.$('[data-action="desktop-review-save"]').disabled&&!t.$('#manual-review-refresh').hidden&&t.$('#manual-review-evidence').value.includes('2.07'),'Stale submission is blocked with entered evidence preserved');
+  t.action('desktop-review-refresh');await settle();t.action('desktop-review-save');
+  resolved=true;commitReview(pendingSaves[3]);await settle();
+  verify(pendingSaves[3].payload.dataVersion==='13'&&pendingSaves[3].payload.requestId!==pendingSaves[2].payload.requestId,'Refresh requires explicit resubmission at the new version');
+  verify(t.$('.manual-review-facts').textContent.includes('原规则结果')&&t.$('.manual-review-facts').textContent.includes('+1.34 元 / 进'),'Confirmed amount appears alongside original rule result');
+  verify(t.$('.manual-review-reasons').textContent.includes('已解除负额符号待核')&&t.$('.manual-review-reasons').textContent.includes('仍待核交易时间待核'),'Resolved and remaining reasons are visible independently');
+  t.action('desktop-review-correct');
+  t.input('#manual-review-amount','1.35');t.input('#manual-review-direction','进');t.input('#manual-review-evidence','追加更正的依据。');
+  t.action('desktop-review-save');
+  corrected=true;commitReview(pendingSaves[4],{before_amount:'134',before_direction:'进'});await settle();
+  verify(pendingSaves[4].payload.action==='correct'&&t.$$('.manual-review-history')[0].querySelectorAll('.manual-review-evidence').length===2,'Correction appends history and preserves original confirmation evidence');
   t.close();
 
   console.log(`PASS: ${passed} desktop renderer contract assertions (mock bridge, no worker/database acceptance)`);

@@ -59,12 +59,12 @@ test('v3重建无CNY默认；旧列类型、int64、原始值及摘要元数据�
   assert.deepEqual(readSummary(db,record).stats,{files:1,flows:1,pending:0});
 });
 
-test('新建case直接v3、workspace仍v2，重开识别已知结构且不重复迁移',async t=>{
+test('新建案件直接使用 v4、工作区仍用 v2，重开识别已知结构且不重复迁移',async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'fundsift-foundation-store-'));
   const store=new WorkspaceStore({schemaPath});
   t.after(()=>{store.close();fs.rmSync(root,{recursive:true,force:true});});
   await store.openWorkspace(root);const made=await store.createCase({name:'合成新案',number:'NEW3'});
-  assert.equal(store.caseDb.pragma('user_version',{simple:true}),3);
+  assert.equal(store.caseDb.pragma('user_version',{simple:true}),4);
   assert.equal(store.catalog.pragma('user_version',{simple:true}),2);
   store.close();assert.equal((await store.openWorkspace(root)).cases.find(x=>x.id===made.id).available,true);
   assert.equal(fs.existsSync(path.join(root,'cases',made.id,'backup')),false);

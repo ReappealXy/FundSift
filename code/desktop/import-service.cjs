@@ -33,7 +33,7 @@ function id(db,table) {
   return Number(next);
 }
 function assertCase(db,record) {
-  if(!record || typeof record.id!=='string' || db.pragma('user_version',{simple:true})!==3 ||
+  if(!record || typeof record.id!=='string' || ![3,4].includes(db.pragma('user_version',{simple:true})) ||
     db.prepare('SELECT case_uuid FROM desktop_case_identity WHERE id=1').get()?.case_uuid!==record.id) {
     fail('FS_CASE_IDENTITY','导入案件与当前数据库不一致，已停止操作。');
   }

@@ -7,7 +7,7 @@ const path = require('node:path');
 const assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
 const Database = require('better-sqlite3');
-const { WorkspaceStore } = require('../code/desktop/storage.cjs');
+const { WorkspaceStore, CASE_SCHEMA_VERSION } = require('../code/desktop/storage.cjs');
 const { logicalSnapshot } = require('../code/desktop/migrations.cjs');
 function folderHash(root) {
   const digest = createHash('sha256');
@@ -47,7 +47,7 @@ function folderHash(root) {
   assert.ok(result.cases.every(item => item.available), JSON.stringify(result.cases)); store.close();
   for (const item of snapshots) {
     const db = new Database(path.join(workspace, item.path), { readonly: true });
-    assert.equal(db.pragma('user_version', { simple: true }), 3);
+    assert.equal(db.pragma('user_version', { simple: true }), CASE_SCHEMA_VERSION);
     item.after = logicalSnapshot(db, item.before);
     assert.deepEqual(item.after, item.before);
     assert.deepEqual(db.pragma('foreign_key_check'), []);

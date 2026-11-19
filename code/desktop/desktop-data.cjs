@@ -7,6 +7,7 @@ const { queryFlowPage } = require('./flow-query.cjs');
 const { withCaseReadSnapshot } = require('./hardening.cjs');
 const { assertInt64 } = require('./money.cjs');
 const { queryRelationCandidates } = require('./relation-candidates.cjs');
+const { getReviewContext, saveReview, listMaterialReviewHistory } = require('./manual-review.cjs');
 
 function fail(code, message) { throw Object.assign(new Error(message), { code }); }
 function object(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
@@ -47,7 +48,7 @@ function approvedPolicy(formatKey, confirmedAt) {
     review: { status: 'approved', by: '本机操作人', at: confirmedAt,
       reason: formatKey === 'ccb-account-32col-v1'
         ? '已确认采用建行保守规则；币种仅按原始人民币元及批准映射确认，账号卡号不合并，负额待核，余额仅保留。技术预览，完整G0未完成。'
-        : '已根据本次所选协查材料来源确认金额均为人民币，采用已批准格式规则；仅技术预览，完整G0未完成，待核只读。' } };
+        : '已根据本次所选协查材料来源确认金额均为人民币，采用已批准格式规则。技术预览，完整G0未完成。' } };
 }
 
 class DesktopData {
@@ -68,8 +69,11 @@ class DesktopData {
       const materials = db.prepare(`SELECT s.id,s.file_name AS fileName,s.file_size AS sizeBytes,s.file_sha256 AS sha256,
         s.status,s.perspective,s.encoding_observed AS encoding,s.format_observed AS formatKey,
         s.data_rows AS observedRows,s.coverage_complete AS coverageComplete,s.current_batch_id AS currentBatchId,
-        b.status AS batchStatus,b.imported_rows AS importedRows,b.pending_rows AS pendingRows,
-        b.unquantifiable_rows AS unquantifiableRows,b.parser_version AS parserVersion,b.finished_at AS importedAt,
+        b.status AS batchStatus,b.imported_rows AS importedRows,b.parser_version AS parserVersion,b.finished_at AS importedAt,
+        CASE WHEN b.id IS NOT NULL THEN (SELECT count(*) FROM fund_flow f WHERE f.source_file_id=s.id AND f.batch_id=b.id AND f.status='pending') END AS pendingRows,
+        CASE WHEN b.id IS NOT NULL THEN (SELECT count(*) FROM fund_flow f WHERE f.source_file_id=s.id AND f.batch_id=b.id AND f.amount IS NULL) END AS unquantifiableRows,
+        (SELECT count(DISTINCT e.fund_flow_id) FROM review_event e WHERE e.source_file_id=s.id AND e.batch_id=b.id) AS reviewedRows,
+        (SELECT count(*) FROM (SELECT e.source_loc,e.raw_sha256 FROM review_event e WHERE e.source_file_id=s.id AND e.batch_id IS NOT b.id GROUP BY e.source_loc,e.raw_sha256)) AS previousReviewedRows,
         rule.rule_version AS ruleVersion,
         (s.format_observed='alipay-account-17col-v1' AND b.archive_entry_id IS NOT NULL AND rule.rule_version=1) AS canReimport,
         latest.id AS latestBatchId,latest.status AS latestBatchStatus,latest.error_code AS latestErrorCode,
@@ -93,6 +97,21 @@ class DesktopData {
     const {db} = this.context(caseId);
     if (!keys(options, ['limit'])) fail('FS_QUERY_INPUT', '关系候选查询参数无效。');
     return queryRelationCandidates(db,{...options,caseId});
+  }
+  async getReview(caseId, flowId) {
+    const { db, record } = this.context(caseId);
+    const { legacyWithoutArchive, ...review } = getReviewContext(db, record, flowId);
+    const source = legacyWithoutArchive ? null : await this.readFlowSource(caseId, { flowId, dataVersion: review.dataVersion });
+    return { ...review, source };
+  }
+  saveReview(caseId, payload) {
+    const { db, record } = this.context(caseId);
+    const review = saveReview(db, record, payload);
+    return { review, materials: this.listMaterials(caseId), case: this.store._dto(record, db) };
+  }
+  listReviewHistory(caseId, sourceFileId) {
+    const { db, record } = this.context(caseId);
+    return listMaterialReviewHistory(db, record, sourceFileId);
   }
   async importFile(caseId, input) {
     const context = this.context(caseId);
@@ -149,7 +168,9 @@ class DesktopData {
         JOIN import_batch b ON b.id=s.current_batch_id AND b.id=f.batch_id AND b.source_file_id=s.id AND b.status='done'
         WHERE f.id=? AND f.case_id=1`).safeIntegers().get(flowId);
       if (!row) fail('FS_IMPORT_SOURCE', '此流水不属于当前已发布批次，请刷新列表。');
-      return { ...wire(row), pendingReasons: context.db.prepare(`SELECT reason_code,detail FROM pending_reason
+      const baseline = context.db.prepare(`SELECT before_amount AS amount,before_direction AS direction,before_status AS status
+        FROM review_event WHERE fund_flow_id=? AND action='resolve' ORDER BY id LIMIT 1`).safeIntegers().get(flowId);
+      return { ...wire(row), initialRule: baseline ? wire(baseline) : null, pendingReasons: context.db.prepare(`SELECT reason_code,detail FROM pending_reason
         WHERE fund_flow_id=? AND resolved_at IS NULL ORDER BY reason_code`).all(flowId) };
     });
     readCurrent();

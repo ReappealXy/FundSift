@@ -28,6 +28,9 @@
   const desktopOperations = new Map();
   const live = {materials:[],page:null,cursor:null,history:[],source:'',filter:'all',loading:false,error:'',receipt:null,
     workpaper:null,exportError:'',exporting:false,cleanup:null,epoch:0};
+  let activeReview = null;
+  const reviewActions = {note:'记说明',resolve:'确认金额和方向',correct:'追加更正'};
+  const hasManualReview = desktop && typeof desktopBridge.getReview==='function' && typeof desktopBridge.saveReview==='function';
   const formatNames = new Map([
     ['alipay-account-17col-v1','支付宝账户 CSV'],
     ['wechat-trades-27col-v1','微信交易 TXT'],
@@ -145,7 +148,7 @@
     const detail=copy.stages[state.route];
     return heading+`<section class="panel desktop-stage"><div class="desktop-stage-symbol">${ico(detail.icon,29)}</div><h2>${detail.title}</h2><p>${detail.body}</p><div class="desktop-saved">${ico('checkCircle',15)}${copy.case.savedNote}</div>${btn('返回案件工作台','nav','home','','data-route="home"')}</section>`;
   }
-  function previewNote(){return '<p class="preview-note">技术预览 · 完整 G0 尚未完成。待核记录可查看原文与处理依据，人工复核开发中。</p>';}
+  function previewNote(){return `<p class="preview-note">技术预览 · 完整 G0 尚未完成。${hasManualReview?'待核流水可记说明，符合条件的建行负额退货可确认金额和方向。':'待核记录可查看原文与处理依据，人工复核开发中。'}</p>`;}
   function receiptView(){
     const r=live.receipt;
     if(!r)return '';
@@ -176,8 +179,13 @@
       }
     }
     else if(material.canRetry&&typeof desktopBridge.retryImport==='function')action=btn('重试导入','desktop-retry-import','refresh','small',attrs);
+    if((Number(material.reviewedRows)>0||Number(material.previousReviewedRows)>0)&&typeof desktopBridge.listReviewHistory==='function'){
+      action+=` ${btn('查看复核历史','desktop-review-material-history',null,'small',attrs)}`;
+    }
+    const prior=Number(material.previousReviewedRows)>0
+      ? `<div class="cell-note material-review-notice">${esc(material.previousReviewedRows)} 条流水有旧批次复核记录，本批次未继承。可查看复核历史。</div>` : '';
     const rule=material.ruleVersion?` · 规则 v${esc(material.ruleVersion)}`:'';
-    return `<tr><td><div class="cell-title">${title}</div><div class="cell-note num" title="${esc(material.sha256)}">SHA256 ${esc(material.sha256?.slice(0,16)||'—')}…</div></td><td title="${esc(formatHint)}">${format}<div class="cell-note">${esc(material.encoding||'—')}${rule}</div></td><td>${esc(material.batchStatus||material.status)}<div class="cell-note">${latestError}</div></td><td class="num">${counts}${diagnostics}</td><td>${action}</td></tr>`;
+    return `<tr><td><div class="cell-title">${title}</div><div class="cell-note num" title="${esc(material.sha256)}">SHA256 ${esc(material.sha256?.slice(0,16)||'—')}…</div></td><td title="${esc(formatHint)}">${format}<div class="cell-note">${esc(material.encoding||'—')}${rule}</div></td><td>${esc(material.batchStatus||material.status)}<div class="cell-note">${latestError}${prior}</div></td><td class="num">${counts}${diagnostics}</td><td>${action}</td></tr>`;
   }
   function internalTransfer(row){
     if(row.rule_version!=='2'&&row.rule_version!==2)return null;
@@ -189,15 +197,17 @@
   }
   function ledgerRow(row, disabled){
     const reasons=row.pendingReasons.map(reason=>reason.detail).join('；');
-    const classification=internalTransfer(row)?'<div class="cell-note">内部划转 · 不计入经济收支</div>':'';
-    return `<tr><td class="num">${esc(row.txn_time||'时间待核')}<div class="cell-note">${esc(readable(row.source_file_name))} · ${esc(row.source_loc)}</div>${btn('查看原文','desktop-source','external','small ledger-source-button',`data-id="${esc(row.id)}" ${disabled}`)}</td><td>${status(row.status)}${classification}<div class="cell-note" title="${esc(reasons)}">${esc(reasons)}</div></td><td><div class="cell-title">${esc(readable(row.acct_no||'身份待核'))}</div><div class="cell-note">${esc(readable(row.peer_name||row.peer_acct||row.summary||'—'))}</div></td><td class="num">${esc(readable(row.raw_amount_text??'（空）'))} ${esc(rawUnit(row))}<div class="cell-note">${esc(row.raw_direction||'未知方向')}</div></td><td class="num">${exactMoney(row.amount)}<div class="cell-note">${esc(row.currency||'币种未覆盖，不计算')}</div></td></tr>`;
+    const classification=internalTransfer(row)?'<div class="cell-note">业务性质已定（内部划转），方向待定</div>':'';
+    const attrs=`data-id="${esc(row.id)}" ${disabled}`;
+    const review=hasManualReview?btn(row.status==='pending'?'打开复核':'复核历史','desktop-review-open',null,'small',attrs):'';
+    return `<tr><td class="num">${esc(row.txn_time||'时间待核')}<div class="cell-note">${esc(readable(row.source_file_name))} · ${esc(row.source_loc)}</div><div class="ledger-actions">${btn('查看原文','desktop-source','external','small',attrs)}${review}</div></td><td>${status(row.status)}${classification}<div class="cell-note" title="${esc(reasons)}">${esc(reasons)}</div></td><td><div class="cell-title">${esc(readable(row.acct_no||'身份待核'))}</div><div class="cell-note">${esc(readable(row.peer_name||row.peer_acct||row.summary||'—'))}</div></td><td class="num">${esc(readable(row.raw_amount_text??'（空）'))} ${esc(rawUnit(row))}<div class="cell-note">${esc(row.raw_direction||'未知方向')}</div></td><td class="num">${exactMoney(row.amount)}<div class="cell-note">${esc(row.currency||'币种未覆盖，不计算')}</div></td></tr>`;
   }
   function desktopDataPage(){
     const disabled=desktop.busy||live.loading?'disabled':'';
     const notice=live.error?`<div class="desktop-data-error" role="alert">${esc(live.error)} ${btn('刷新列表','refresh-data','refresh','small',disabled)}</div>`:'';
     if(state.route==='materials')return previewNote()+stagingCleanupView()+receiptView()+notice+`<section class="panel desktop-materials"><div class="desktop-materials-head"><div class="spread"><p class="feature-status">真实导入技术预览</p>${btn('选择原始材料','desktop-import','upload','primary',disabled)}</div><p>支持指定支付宝账户 CSV、微信 27 列 TXT、建行 32 列 XLSX。按来源坐标保留每一行。</p></div><div class="table-scroll"><table class="data-table"><thead><tr><th>材料 / 原件身份</th><th>格式</th><th>当前批次</th><th>写入 / 待核</th><th scope="col">操作</th></tr></thead><tbody>${live.materials.map(material=>materialRow(material,disabled)).join('')}</tbody></table>${live.loading?empty('正在读取材料','请等待本地数据返回。'):live.materials.length?'':empty('还没有已导入材料','点击“选择原始材料”，选择一个受支持模板的文件。')}</div><p class="field-note">请保留原件，不删行或改表头。同一原件重复导入会被拒绝；未知模板明确报错。</p><div class="desktop-saved">${ico('checkCircle',15)}${copy.case.savedNote}</div></section>`;
     const page=live.page,rows=page?.rows||[],review=state.route==='review';
-    return previewNote()+notice+`<section class="panel desktop-flows"><div class="table-tools"><span>${review?'待核只读清单':'当前已发布流水'}</span><select id="desktop-source" class="select" aria-label="按来源材料筛选"><option value="">全部材料</option>${live.materials.filter(m=>m.currentBatchId).map(m=>`<option value="${esc(m.id)}" ${live.source===m.id?'selected':''}>${esc(readable(m.fileName))}</option>`).join('')}</select>${review?'':`<select id="desktop-status" class="select" aria-label="按记录状态筛选">${[['all','全部状态'],['confirmed','已确认'],['pending','待核']].map(([v,t])=>`<option value="${v}" ${live.filter===v?'selected':''}>${t}</option>`).join('')}</select>`}<span class="push"></span>${btn('关联候选','desktop-relations','link','small',disabled)}${btn('刷新列表','refresh-data','refresh','small',disabled)}</div><div class="table-scroll"><table class="data-table desktop-ledger"><thead><tr><th>交易时间 / 来源原文</th><th>状态 / 待核原因</th><th>本方 / 交易对方</th><th>原始金额 / 方向</th><th>标准金额（元）</th></tr></thead><tbody>${rows.map(row=>ledgerRow(row,disabled)).join('')}</tbody></table>${live.loading?empty('正在读取流水','请等待本地数据返回。'):rows.length?'':empty(review?'暂无待核记录':'暂无已发布流水',live.error?'先处理上方错误，再刷新。':'可先在材料管理中导入受支持的原始材料。')}</div><div class="table-footer"><span>共 ${esc(page?.total??'—')} 条 · 第 ${live.history.length+1} 页 · 金额以整数分保存</span><span class="push"></span>${btn('上一页','desktop-prev',null,'small',!live.history.length||disabled?'disabled':'')}${btn('下一页','desktop-next',null,'small',!page?.nextCursor||disabled?'disabled':'')}</div></section><p class="quiet-note">${review?'待核原因保留原值与依据，本版没有保存或确认按钮。':'来源材料可能反映同一资金活动的不同视角，本版不自动去重或合计。'}</p>`;
+    return previewNote()+notice+`<section class="panel desktop-flows"><div class="table-tools"><span>${review?(hasManualReview?'待核清单':'待核只读清单'):'当前已发布流水'}</span><select id="desktop-source" class="select" aria-label="按来源材料筛选"><option value="">全部材料</option>${live.materials.filter(m=>m.currentBatchId).map(m=>`<option value="${esc(m.id)}" ${live.source===m.id?'selected':''}>${esc(readable(m.fileName))}</option>`).join('')}</select>${review?'':`<select id="desktop-status" class="select" aria-label="按记录状态筛选">${[['all','全部状态'],['confirmed','已确认'],['pending','待核']].map(([v,t])=>`<option value="${v}" ${live.filter===v?'selected':''}>${t}</option>`).join('')}</select>`}<span class="push"></span>${btn('关联候选','desktop-relations','link','small',disabled)}${btn('刷新列表','refresh-data','refresh','small',disabled)}</div><div class="table-scroll"><table class="data-table desktop-ledger"><thead><tr><th>交易时间 / 来源原文</th><th>状态 / 待核原因</th><th>本方 / 交易对方</th><th>原始金额 / 方向</th><th>标准金额（元）</th></tr></thead><tbody>${rows.map(row=>ledgerRow(row,disabled)).join('')}</tbody></table>${live.loading?empty('正在读取流水','请等待本地数据返回。'):rows.length?'':empty(review?'暂无待核记录':'暂无已发布流水',live.error?'先处理上方错误，再刷新。':'可先在材料管理中导入受支持的原始材料。')}</div><div class="table-footer"><span>共 ${esc(page?.total??'—')} 条 · 第 ${live.history.length+1} 页 · 金额以整数分保存</span><span class="push"></span>${btn('上一页','desktop-prev',null,'small',!live.history.length||disabled?'disabled':'')}${btn('下一页','desktop-next',null,'small',!page?.nextCursor||disabled?'disabled':'')}</div></section><p class="quiet-note">${review?(hasManualReview?'已确认流水可在「流水明细」中查看复核历史。':'待核原因保留原值与依据，本版没有保存或确认按钮。'):'来源材料可能反映同一资金活动的不同视角，本版不自动去重或合计。'}</p>`;
   }
   async function loadDesktopPage(reset=false){
     if(!desktop||!['materials','flows','review'].includes(state.route)||!currentCase()||desktop.error)return;
@@ -241,7 +251,7 @@
     const receipt=live.workpaper;
     const error=live.exportError?`<p class="desktop-data-error" role="alert">${esc(live.exportError)}</p>`:'';
     const saved=receipt?`<section class="panel workpaper-receipt" role="status" data-version="${esc(receipt.dataVersion)}"><div class="panel-head"><h2>底稿已保存</h2><span class="secondary num">数据版本 ${esc(receipt.dataVersion)}</span></div><div class="workpaper-receipt-body"><p class="workpaper-file">${esc(receipt.filePath)}</p><dl class="workpaper-counts">${[['总行数',receipt.totalRows],['已确认',receipt.confirmedRows],['待核',receipt.pendingRows],['金额未知',receipt.unknownAmountRows]].map(([label,value])=>`<div><dt>${label}</dt><dd class="num">${esc(value)}</dd></div>`).join('')}</dl></div></section>`:'';
-    return `<section class="panel workpaper-panel" aria-busy="${live.exporting}"><div class="panel-head"><h2>Excel 核对底稿</h2><span class="secondary">.xlsx</span></div><div class="workpaper-body"><p>导出本案件当前有效流水。表中并列展示原文、标准值、待核原因和来源位置，说明页记录底稿格式、数据版本和各平台行数。</p><p class="quiet-note">请保存到可写的本地 NTFS 文件夹，例如本机的文档文件夹。底稿为规则结果，在 Excel 中修改底稿不计为复核。</p>${btn(live.exporting?'正在导出…':'导出 Excel 底稿','desktop-export-workpaper','download','primary',desktop.busy?'disabled':'')}</div></section>${error}${saved}`;
+    return `<section class="panel workpaper-panel" aria-busy="${live.exporting}"><div class="panel-head"><h2>Excel 核对底稿</h2><span class="secondary">.xlsx</span></div><div class="workpaper-body"><p>导出本案件当前有效流水的规则结果。表中并列展示原文、标准值、待核原因和来源位置，说明页记录底稿格式、数据版本和各平台行数。</p><p class="quiet-note">人工结论保存在软件的复核历史中。Excel 底稿仅含规则结果，在 Excel 中修改底稿不计为复核。</p><p class="quiet-note">请保存到可写的本地 NTFS 文件夹，例如本机的文档文件夹。</p>${btn(live.exporting?'正在导出…':'导出 Excel 底稿','desktop-export-workpaper','download','primary',desktop.busy?'disabled':'')}</div></section>${error}${saved}`;
   }
   async function desktopExport(){
     if(desktop.busy||state.route!=='exports'||!currentCase()||typeof desktopBridge.exportWorkpaper!=='function')return;
@@ -269,7 +279,7 @@
   }
   function sourceMoneyExplanation(source){
     const money=source.savedDerivation?.money;
-    const row=source.standard;
+    const row={...source.standard,...source.standard.initialRule};
     const unit=money?.source_unit;
     if(unit!=='元'&&unit!=='分')return '';
     const parts=[unit==='元'?'原始单位为元，软件换算成整数分保存。':'原始单位为分，直接按整数分保存。'];
@@ -293,13 +303,217 @@
     }
     return `<div class="source-money-explanation">${parts.map(part=>`<p>${esc(part)}</p>`).join('')}</div>`;
   }
+  function sourceFieldTable(source){
+    const entries=source.fieldEntries||Object.entries(source.fields||{}).map(([header,value],i)=>({column:i+1,header,value}));
+    return `<table class="data-table raw-evidence"><thead><tr><th scope="col">列 / 字段</th><th scope="col">原始值</th></tr></thead><tbody>${entries.map(e=>`<tr><td>${esc(e.column)} · ${esc(e.header)}</td><td>${esc(readable(e.value))}</td></tr>`).join('')}</tbody></table>`;
+  }
   async function desktopSource(id){
     if(desktop.busy||live.loading||!live.page)return;
     desktop.busy=true;render();
     try{
       const source=await desktopCall('readFlowSource',state.caseId,{flowId:id,dataVersion:live.page.dataVersion});
-      const r=source.standard,entries=source.fieldEntries||Object.entries(source.fields).map(([header,value],i)=>({column:i+1,header,value}));
-      modal('原始记录 · 只读',`<p class="preview-note">归档原件已核验。格式控制字符显示为转义文本；原始字节与字段保留。</p><p>${esc(readable(source.fileName))} · ${esc(source.sourceLoc)}</p><div class="cell-note num source-hash">SHA256 ${esc(source.sourceSha256)}</div><div class="source-standard">标准金额：${exactMoney(r.amount)} 元 · ${esc(r.currency||'币种未知')} · ${status(r.status)}<br>${esc(r.pendingReasons.map(p=>p.detail).join('；')||'没有未解决待核原因')}${sourceMoneyExplanation(source)}</div><table class="data-table raw-evidence"><thead><tr><th>列 / 字段</th><th>原始值</th></tr></thead><tbody>${entries.map(e=>`<tr><td>${esc(e.column)} · ${esc(e.header)}</td><td>${esc(readable(e.value))}</td></tr>`).join('')}</tbody></table><details><summary>保存时的处理依据</summary><pre class="derivation-json">${esc(JSON.stringify(source.savedDerivation,null,2))}</pre></details>`,btn('关闭','close-modal'),true);
+      const r=source.standard;
+      modal('原始记录 · 只读',`<p class="preview-note">归档原件已核验。格式控制字符显示为转义文本；原始字节与字段保留。</p><p>${esc(readable(source.fileName))} · ${esc(source.sourceLoc)}</p><div class="cell-note num source-hash">SHA256 ${esc(source.sourceSha256)}</div><div class="source-standard">${r.initialRule?'当前金额（含人工复核）':'标准金额'}：${exactMoney(r.amount)} 元 · ${esc(r.currency||'币种未知')} · ${status(r.status)}<br>${esc(r.pendingReasons.map(p=>p.detail).join('；')||'没有未解决待核原因')}${sourceMoneyExplanation(source)}</div>${sourceFieldTable(source)}<details><summary>保存时的规则依据</summary><pre class="derivation-json">${esc(JSON.stringify(source.savedDerivation,null,2))}</pre></details>`,btn('关闭','close-modal'),true);
+    }catch(error){live.error=desktopError(error);toast(live.error);}
+    finally{desktop.busy=false;render();}
+  }
+  function reviewHistoryView(history,batchId,showLocation=false){
+    if(!history.length)return '<p class="field-note">暂无复核记录。</p>';
+    return `<ol class="manual-review-history">${history.map(event=>{
+      const prior=String(event.batch_id)!==String(batchId);
+      const source=showLocation?` · ${esc(event.source_loc)}`:'';
+      const batch=prior?'旧批次，未继承':'当前批次';
+      const match=showLocation&&prior?(event.current_flow_id==null?' · 当前批次暂无相符记录':' · 当前批次有相符记录'):'';
+      const amountChange=event.action==='note'?'':`<p class="manual-review-change"><span>${reviewValue(event.before_amount,event.before_direction)}</span><span aria-hidden="true">→</span><span>${reviewValue(event.after_amount,event.after_direction)}</span></p>`;
+      return `<li><div class="manual-review-event"><strong>${esc(reviewActions[event.action]||event.action)}</strong><span class="secondary">${esc(localTimestamp(event.reviewed_at))} · ${esc(event.operator)}</span></div><p class="cell-note">${batch} ${esc(event.batch_id)} · 规则 v${esc(event.rule_version)}${source}${match}</p>${amountChange}<p class="manual-review-evidence">${esc(event.evidence)}</p></li>`;
+    }).join('')}</ol>`;
+  }
+  function reviewValue(amount,direction){
+    const text=amount==null?'金额待核':`${exactMoney(amount)} 元`;
+    return `<span class="num">${text}</span> / ${esc(direction||'方向待核')}`;
+  }
+  function reviewMode(context,mode){
+    if(mode==='note')return context.canNote;
+    if(mode==='resolve')return Boolean(context.resolveReasonId);
+    return mode==='correct'&&Boolean(context.correctReasonId);
+  }
+  function reviewFormView(context,mode,draft){
+    const choices=Object.entries(reviewActions).filter(([action])=>reviewMode(context,action));
+    if(!choices.length)return '';
+    const tabs=choices.length>1?`<div class="manual-review-modes" role="group" aria-label="复核操作">${choices.map(([action,label])=>btn(label,`desktop-review-${action}`,null,action===mode?'small primary':'small',`aria-pressed="${action===mode}"`)).join('')}</div>`:'';
+    const reasonId=mode==='resolve'?context.resolveReasonId:context.correctReasonId;
+    const reason=context.reasons.find(item=>item.id===reasonId);
+    const hint=mode==='note'
+      ? '仅保存说明，流水继续待核。'
+      : mode==='resolve'
+        ? `本次只解除「${reason?.detail||'符号含义未定义'}」。剩余原因继续待核。`
+        : '本次修改金额和方向，原人工结论保留在历史里。';
+    const values=mode==='note'?'':`<div class="manual-review-values"><div class="field"><label for="manual-review-amount">金额（元，不含正负号）</label><input id="manual-review-amount" class="text-input" inputmode="decimal" maxlength="22" autocomplete="off" value="${esc(draft.amountText)}"></div><div class="field"><label for="manual-review-direction">方向</label><select id="manual-review-direction" class="text-input"><option value="">请选择</option>${['进','出'].map(v=>`<option value="${v}" ${draft.direction===v?'selected':''}>${v}</option>`).join('')}</select></div></div>`;
+    return `<section class="manual-review-section"><h3>${choices.length===1?reviewActions[mode]:'办理复核'}</h3>${tabs}<p class="field-note">${esc(hint)}</p><form id="manual-review-form"><fieldset><div class="field"><label for="manual-review-operator">操作人姓名或代号</label><input id="manual-review-operator" class="text-input" maxlength="80" autocomplete="off" value="${esc(draft.operator)}"></div>${values}<div class="field"><label for="manual-review-evidence">${mode==='note'?'说明':'核实依据'}</label><textarea id="manual-review-evidence" class="text-input" rows="3" maxlength="2000">${esc(draft.evidence)}</textarea></div></fieldset></form></section>`;
+  }
+  function showDesktopReview(message=''){
+    const {context,mode,draft}=activeReview;
+    const {source,reasons,history}=context;
+    const row=source?.standard||live.page?.rows.find(item=>item.id===context.flowId)||{};
+    const reasonsView=reasons.length?`<ul class="manual-review-reasons">${reasons.map(reason=>`<li><span class="status ${reason.resolved_at?'confirmed':'pending'}">${reason.resolved_at?'已解除':'仍待核'}</span><span>${esc(reason.detail)}</span></li>`).join('')}</ul>`:'<p class="field-note">没有待核原因。</p>';
+    const prior=history.filter(event=>String(event.batch_id)!==String(context.batchId));
+    const current=history.filter(event=>String(event.batch_id)===String(context.batchId));
+    const oldHistory=prior.length?`<details><summary>旧批次复核历史（${prior.length} 条，本批次未继承）</summary>${reviewHistoryView(prior,context.batchId)}</details>`:'';
+    const access=context.resolveReasonId?'可记说明，或确认金额和方向。':context.correctReasonId?(context.canNote?'可记说明，或追加更正。':'可追加更正。'):context.canNote?'本笔只能记说明。':'可查看本笔复核历史。';
+    const classification=context.internalTransfer?'<p class="manual-review-classification">业务性质已定（内部划转），方向待定。</p>':'';
+    const rule=row.initialRule;
+    const ruleValue=rule?`<div><dt>原规则结果</dt><dd>${reviewValue(rule.amount,rule.direction)}</dd></div>`:'';
+    const rawDetails=source
+      ? `<details class="manual-review-source-detail"><summary>查看核验过的原文</summary>${sourceFieldTable(source)}</details>`
+      : '<p class="field-note">这条旧记录可查看已保存的原文字段，归档原文当前无法回读。</p>';
+    const submit=mode?btn(mode==='note'?'保存说明':reviewActions[mode],'desktop-review-save','check','primary','form="manual-review-form" type="submit"'):'';
+    modal('单笔复核',`
+      <div class="manual-review-source"><strong>${esc(readable(context.sourceFileName||source?.fileName))}</strong>
+        <span class="secondary">${esc(context.sourceLoc||source?.sourceLoc)} · ${esc(row.txn_time||'时间待核')}</span>
+      </div>
+      <dl class="manual-review-facts">
+        <div><dt>原文金额 / 方向</dt><dd><span class="num">${esc(readable(row.raw_amount_text??'（空）'))} ${esc(rawUnit(row))}</span> / ${esc(readable(row.raw_direction||'（空）'))}</dd></div>
+        <div><dt>${rule?'当前人工结果':'当前规则结果'}</dt><dd>${reviewValue(context.amount,context.direction)}</dd></div>
+        ${ruleValue}
+        <div><dt>摘要</dt><dd>${esc(readable(row.summary||'—'))}</dd></div>
+      </dl>
+      ${rawDetails}
+      <section class="manual-review-section">
+        <div class="manual-review-section-heading"><h3>待核原因</h3>${status(context.status)}</div>
+        ${classification}${reasonsView}<p class="field-note">${access}</p>
+      </section>
+      <div class="manual-review-feedback">
+        <p class="inline-error" id="manual-review-error" role="alert"></p>
+        <p id="manual-review-result" role="status">${esc(message)}</p>
+        ${btn('重新读取本笔','desktop-review-refresh','refresh','small','id="manual-review-refresh" hidden')}
+      </div>
+      ${mode?reviewFormView(context,mode,draft):''}
+      <section class="manual-review-section"><h3>本批次复核历史</h3>${reviewHistoryView(current,context.batchId)}${oldHistory}</section>`,
+    btn('关闭','close-modal')+submit,true);
+    $('.modal').dataset.manualReview='true';
+    $('#manual-review-form')?.addEventListener('submit',event=>{event.preventDefault();saveDesktopReview();});
+  }
+  function readReviewDraft(){
+    const form=$('#manual-review-form');
+    if(!activeReview||!form)return;
+    activeReview.draft={
+      operator:$('#manual-review-operator').value,
+      evidence:$('#manual-review-evidence').value,
+      amountText:$('#manual-review-amount')?.value??activeReview.draft.amountText,
+      direction:$('#manual-review-direction')?.value??activeReview.draft.direction
+    };
+  }
+  function chooseReviewMode(mode){
+    if(!activeReview||desktop.busy||activeReview.stale||!reviewMode(activeReview.context,mode)||activeReview.mode===mode)return;
+    readReviewDraft();
+    activeReview.mode=mode;
+    showDesktopReview();
+  }
+  function updateReviewContext(context){
+    activeReview.context=context;
+    if(!reviewMode(context,activeReview.mode)){
+      activeReview.mode=Object.keys(reviewActions).find(mode=>reviewMode(context,mode))||null;
+    }
+  }
+  async function desktopOpenReview(id){
+    if(!hasManualReview||desktop.busy||live.loading||!live.page?.rows.some(row=>row.id===id))return;
+    desktop.busy=true;
+    render();
+    try{
+      const context=await desktopCall('getReview',state.caseId,id);
+      activeReview={draft:{},mode:null,request:null,stale:false,context:null};
+      updateReviewContext(context);
+      showDesktopReview();
+    }catch(error){live.error=desktopError(error);toast(live.error);}
+    finally{desktop.busy=false;render();}
+  }
+  function reviewSaving(saving){
+    const dialog=$('.modal[data-manual-review]');
+    if(!dialog)return;
+    dialog.setAttribute('aria-busy',String(saving));
+    const fields=$('#manual-review-form fieldset');
+    if(fields)fields.disabled=saving;
+    for(const control of $$('button',dialog)){
+      const modifiesReview=['desktop-review-save','desktop-review-note','desktop-review-resolve','desktop-review-correct'].includes(control.dataset.action);
+      control.disabled=saving||modifiesReview&&activeReview.stale;
+    }
+  }
+  async function refreshDesktopReview(){
+    if(!activeReview||desktop.busy)return;
+    readReviewDraft();
+    desktop.busy=true;
+    reviewSaving(true);
+    try{
+      const context=await desktopCall('getReview',state.caseId,activeReview.context.flowId);
+      activeReview.stale=false;
+      activeReview.request=null;
+      updateReviewContext(context);
+      showDesktopReview('已重新读取。请核对当前结果和待核原因，再决定是否保存。');
+      reviewSaving(true);
+      await loadDesktopPage(true);
+    }catch(error){$('#manual-review-error').textContent=desktopError(error);}
+    finally{desktop.busy=false;reviewSaving(false);render();}
+  }
+  async function saveDesktopReview(){
+    if(!activeReview?.mode||desktop.busy||activeReview.stale)return;
+    readReviewDraft();
+    const {context,mode,draft}=activeReview;
+    const errorMessage=$('#manual-review-error');
+    const operator=draft.operator.trim(),evidence=draft.evidence.trim();
+    if(!operator||!evidence){
+      errorMessage.textContent='请填写操作人及说明或核实依据。';
+      $(operator?'#manual-review-evidence':'#manual-review-operator').focus();
+      return;
+    }
+    const payload={flowId:context.flowId,dataVersion:context.dataVersion,action:mode,operator,evidence};
+    if(mode!=='note'){
+      const amountText=draft.amountText.trim();
+      if(!/^\d{1,19}(?:\.\d{1,2})?$/.test(amountText)||!/[1-9]/.test(amountText)||!['进','出'].includes(draft.direction)){
+        errorMessage.textContent='请填写大于零的金额（最多两位小数，不含正负号），并选择方向。';
+        return;
+      }
+      Object.assign(payload,{amountText,direction:draft.direction,reasonId:mode==='resolve'?context.resolveReasonId:context.correctReasonId});
+    }
+    const key=JSON.stringify(payload);
+    if(activeReview.request?.key!==key)activeReview.request={key,id:window.crypto.randomUUID()};
+    payload.requestId=activeReview.request.id;
+    desktop.busy=true;
+    reviewSaving(true);
+    errorMessage.textContent='';
+    $('#manual-review-result').textContent='';
+    let saved=false;
+    try{
+      const result=await desktopCall('saveReview',state.caseId,payload);
+      saved=true;
+      upsertDesktopCase(result.case);
+      live.materials=result.materials.materials;
+      activeReview.draft={operator};
+      activeReview.request=null;
+      const updated=await desktopCall('getReview',state.caseId,context.flowId);
+      updateReviewContext(updated);
+      showDesktopReview(mode==='note'?'说明已保存。':mode==='resolve'?'已确认金额和方向。':'更正已保存。');
+      reviewSaving(true);
+      await loadDesktopPage(true);
+    }catch(error){
+      activeReview.stale=saved||error.code==='FS_REVIEW_STALE';
+      errorMessage.textContent=saved?'复核已保存。请重新读取本笔，查看最新结果。':desktopError(error);
+      $('#manual-review-refresh').hidden=!activeReview.stale;
+      if(saved)await loadDesktopPage(true);
+    }finally{
+      desktop.busy=false;
+      reviewSaving(false);
+      render();
+    }
+  }
+  async function desktopMaterialReviewHistory(id){
+    const material=live.materials.find(row=>row.id===id);
+    if(!material||desktop.busy||live.loading||typeof desktopBridge.listReviewHistory!=='function')return;
+    desktop.busy=true;
+    render();
+    try{
+      const result=await desktopCall('listReviewHistory',state.caseId,id);
+      const notice=result.oldReviewCount>0?`<p class="preview-note">${esc(result.oldReviewCount)} 条流水有旧批次复核记录，本批次未继承。</p>`:'';
+      modal('材料复核历史',`<p class="manual-review-source"><strong>${esc(readable(material.fileName))}</strong><span class="secondary">当前批次 ${esc(result.currentBatchId||'—')}</span></p>${notice}${reviewHistoryView(result.history,result.currentBatchId,true)}`,btn('关闭','close-modal'),true);
     }catch(error){live.error=desktopError(error);toast(live.error);}
     finally{desktop.busy=false;render();}
   }
@@ -477,10 +691,15 @@
     requestAnimationFrame(()=>{if(!dialog?.isConnected)return;const focus=focusableElements($('.modal-body',dialog))[0]||$('.modal-head button',dialog);focus?.focus();});
   }
   function closeModal(){
+    const reviewId=activeReview?.context?.flowId;
+    activeReview=null;
     $('#modal-root').innerHTML='';
     modalLayers?.forEach(({el,hidden,inert})=>{el.hidden=hidden;el.inert=inert;});
     modalLayers=null;
-    if(lastFocus?.isConnected)lastFocus.focus();
+    if(reviewId){
+      const trigger=$$('[data-action="desktop-review-open"]').find(el=>el.dataset.id===String(reviewId));
+      (trigger||$('#main')).focus({preventScroll:true});
+    }else if(lastFocus?.isConnected)lastFocus.focus();
   }
   function canCloseModal(){return !desktop||!desktop.saving&&(!desktop.busy||$('.modal')?.dataset.help==='true');}
   function focusableElements(root){
@@ -611,6 +830,12 @@
       'desktop-export-workpaper':desktopExport,'refresh-data':()=>loadDesktopPage(true),
       'material-flows':el=>{live.source=el.dataset.id;navigate('flows');},
       'desktop-source':el=>desktopSource(el.dataset.id),
+      'desktop-review-open':el=>desktopOpenReview(el.dataset.id),
+      'desktop-review-note':()=>chooseReviewMode('note'),
+      'desktop-review-resolve':()=>chooseReviewMode('resolve'),
+      'desktop-review-correct':()=>chooseReviewMode('correct'),
+      'desktop-review-refresh':refreshDesktopReview,
+      'desktop-review-material-history':el=>desktopMaterialReviewHistory(el.dataset.id),
       'desktop-relations':desktopRelations,
       'desktop-next':()=>{if(!live.loading&&live.page?.nextCursor){live.history.push(live.cursor);live.cursor=live.page.nextCursor;loadDesktopPage();}},
       'desktop-prev':()=>{if(!live.loading&&live.history.length){live.cursor=live.history.pop();loadDesktopPage();}},

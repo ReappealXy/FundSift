@@ -66,7 +66,7 @@ function manifests(folder) {
   });
 }
 
-test('v1含WAL数据升级，独立备份完整，身份原文和时间不变；新建/升级v3结构一致', async t => {
+test('v1含WAL数据升级，独立备份完整，身份原文和时间不变；新建/升级v4结构一致', async t => {
   const { root, store } = setup(t);
   const old = addV1(root, 'Ab-001', true);
   t.after(() => { if (old.db.open) old.db.close(); });
@@ -155,7 +155,7 @@ test('单案升级安装后失败只回滚该案，兼容案件继续可用，�
   assert.equal(manifests(path.dirname(old.file)).length, 2);
 });
 
-test('提交后异常重启识别完整v3，不重复升级或自动恢复旧备份', async t => {
+test('提交后异常重启识别完整v4，不重复升级或自动恢复旧备份', async t => {
   let inject = true;
   const { root, store } = setup(t, { afterCommit: ({ filePath }) => {
     if (inject && filePath.endsWith('case.sqlite')) throw new Error('exit after commit');
@@ -164,7 +164,7 @@ test('提交后异常重启识别完整v3，不重复升级或自动恢复旧备
   const first = await store.openWorkspace(root);
   assert.equal(first.cases[0].available, false);
   const db = new Database(old.file);
-  assert.equal(db.pragma('user_version', { simple: true }), 3);
+  assert.equal(db.pragma('user_version', { simple: true }), 4);
   assert.equal(db.prepare('SELECT amount FROM fund_flow').get().amount, 12345); db.close();
   inject = false; store.close();
   assert.equal((await store.openWorkspace(root)).cases[0].available, true);

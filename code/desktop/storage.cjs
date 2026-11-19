@@ -8,9 +8,10 @@ const Database = require('better-sqlite3');
 const { migrate, schemaSignature, assertKnownSchema } = require('./migrations.cjs');
 const { installCaseV2, validateCaseV1, readSummary } = require('./hardening.cjs');
 const { installCaseV3, configureFoundation } = require('./foundation.cjs');
+const { installCaseV4 } = require('./review-schema.cjs');
 
 const WORKSPACE_SCHEMA_VERSION = 2;
-const CASE_SCHEMA_VERSION = 3;
+const CASE_SCHEMA_VERSION = 4;
 const WORKSPACE_APP_ID = 0x46535753;
 const CASE_APP_ID = 0x46534341;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -50,6 +51,7 @@ function knownSignature(kind, version) {
           sample.pragma('foreign_keys=OFF');
           sample.transaction(() => installCaseV3(sample, record))();
         }
+        if (version >= 4) sample.transaction(() => installCaseV4(sample))();
       }
     }
     const signature = schemaSignature(sample);
@@ -383,7 +385,7 @@ class WorkspaceStore {
     try {
       db = new Database(filePath, { fileMustExist: true });
       const version = db.pragma('user_version', { simple: true });
-      if (![1, 2, CASE_SCHEMA_VERSION].includes(version) || db.pragma('application_id', { simple: true }) !== CASE_APP_ID) {
+      if (![1, 2, 3, CASE_SCHEMA_VERSION].includes(version) || db.pragma('application_id', { simple: true }) !== CASE_APP_ID) {
         throw failure('FS_CASE_VERSION', '该案件数据库版本尚不支持，不能直接覆盖或升级。');
       }
       assertKnownSchema(db, knownSignature('case', version), '案件数据库');
@@ -391,9 +393,13 @@ class WorkspaceStore {
       if (version < CASE_SCHEMA_VERSION) {
         configure(db);
         await migrate({ db, filePath, kind: '案件', identity: { caseUuid: record.id, caseNumber: record.case_no, caseName: record.case_name },
-          expectedSchema: knownSignature('case', version), targetVersion: CASE_SCHEMA_VERSION, rebuildForeignKeys: true,
+          expectedSchema: knownSignature('case', version), targetVersion: CASE_SCHEMA_VERSION, rebuildForeignKeys: version < 3,
           validate: database => { assertCaseIdentity(database, record); validateCaseV1(database, record); },
-          install: database => { if (version === 1) installCaseV2(database, record); installCaseV3(database, record); },
+          install: database => {
+            if (version === 1) installCaseV2(database, record);
+            if (version < 3) installCaseV3(database, record);
+            installCaseV4(database);
+          },
           hooks: this.migrationHooks, onProgress: this.onProgress });
       }
       configure(db);
@@ -463,6 +469,7 @@ class WorkspaceStore {
         db.pragma(`application_id = ${CASE_APP_ID}`);
         installCaseV2(db, record);
         installCaseV3(db, record);
+        installCaseV4(db);
         db.pragma(`user_version = ${CASE_SCHEMA_VERSION}`);
       })();
       db.pragma('foreign_keys=ON');

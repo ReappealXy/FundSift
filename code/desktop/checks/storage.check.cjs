@@ -43,7 +43,7 @@ test('空工作区、建案、每案目录与关闭重开后持久化', async t 
   assert.ok(fs.statSync(path.join(root, 'cases', first.id, 'exports')).isDirectory());
   assert.doesNotThrow(() => JSON.stringify(first));
   const db = new Database(casePath(root, first.id));
-  assert.equal(db.pragma('user_version', { simple: true }), 3);
+  assert.equal(db.pragma('user_version', { simple: true }), 4);
   assert.equal(db.pragma('journal_mode', { simple: true }), 'wal');
   assert.equal(db.prepare('SELECT case_no FROM case_info WHERE id = 1').get().case_no, 'TEST-001');
   db.close();

@@ -79,7 +79,9 @@ main.workspace:focus-visible,#intro-title:focus-visible{outline:none}
 .import-receipt{display:flex;align-items:center;gap:20px;flex-wrap:wrap;padding:16px 20px;border:1px solid var(--line);background:#fff;margin-bottom:16px;font-size:12px}
 .desktop-ledger{table-layout:fixed;min-width:960px}.desktop-ledger th:first-child{width:24%}.desktop-ledger th:nth-child(2){width:27%}.desktop-ledger th:nth-child(3){width:20%}.desktop-ledger th:nth-child(4){width:14%}.desktop-ledger th:nth-child(5){width:15%}
 .desktop-ledger td,.desktop-materials td{overflow-wrap:anywhere;white-space:normal;vertical-align:top}.desktop-ledger .cell-note{max-width:100%;white-space:normal;line-height:1.65}
-.desktop-ledger .ledger-source-button{margin-top:8px;font-family:var(--sans)}
+.ledger-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;font-family:var(--sans)}
+.desktop-materials td:last-child .btn{margin:0 4px 5px 0}
+.material-review-notice{margin-top:4px;color:var(--ink-2)}
 .desktop-flows .table-tools{flex-wrap:wrap;gap:10px}.desktop-flows select{max-width:280px}.desktop-flows .table-footer{gap:10px;flex-wrap:wrap}
 .source-standard{padding:14px 0;line-height:1.9}.source-hash{overflow-wrap:anywhere}.raw-evidence{table-layout:fixed}.raw-evidence th:first-child{width:28%}.raw-evidence td{white-space:pre-wrap;overflow-wrap:anywhere;vertical-align:top;user-select:text}.derivation-json{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.8;user-select:text}
 .source-money-explanation{margin-top:10px;padding:9px 12px;background:var(--blue-soft);color:var(--ink-2);font-size:12px;overflow-wrap:anywhere}
@@ -94,3 +96,31 @@ main.workspace:focus-visible,#intro-title:focus-visible{outline:none}
 .workpaper-counts{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:12px 18px;padding-top:12px;margin:0;border-top:1px solid var(--line)}
 .workpaper-counts dt{color:var(--muted);font-size:11px}
 .workpaper-counts dd{margin:0;font-size:18px;color:var(--navy)}
+
+.manual-review-source{display:flex;align-items:baseline;gap:6px 14px;flex-wrap:wrap;margin:0 0 10px;overflow-wrap:anywhere}
+.manual-review-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px 18px;margin:0;padding:12px 14px;background:var(--surface-2,#f6f8fa)}
+.manual-review-facts dt{font-size:11px;color:var(--muted)}
+.manual-review-facts dd{margin:3px 0 0;font-weight:500;overflow-wrap:anywhere}
+.manual-review-source-detail{margin:10px 0}
+.manual-review-source-detail summary,.manual-review-section summary{cursor:pointer;color:var(--ink-2);padding:3px 0}
+.manual-review-section{margin-top:14px;padding-top:13px;border-top:1px solid var(--line)}
+.manual-review-section h3{margin:0;font-size:13px}
+.manual-review-section-heading,.manual-review-event,.manual-review-modes,.manual-review-change{display:flex;align-items:baseline;gap:6px 12px;flex-wrap:wrap}
+.manual-review-section-heading .status,.manual-review-reasons .status{flex:none}
+.manual-review-reasons,.manual-review-history{list-style:none;padding:0;margin:6px 0 0}
+.manual-review-reasons li{display:flex;gap:8px;align-items:baseline;margin:6px 0;overflow-wrap:anywhere}
+.manual-review-reasons .status{font-size:11px;font-weight:500}
+.manual-review-classification{margin:8px 0;color:var(--ink-2)}
+.manual-review-modes{margin:10px 0}
+.manual-review-section fieldset{min-inline-size:0;margin:10px 0 0;padding:0;border:0}
+.manual-review-section fieldset>.field:last-child{margin-bottom:0}
+.manual-review-values{display:grid;grid-template-columns:2fr 1fr;gap:12px}
+.manual-review-feedback :is(#manual-review-error,#manual-review-result):empty{display:none}
+.manual-review-feedback #manual-review-result{margin:10px 0;color:var(--navy);font-weight:500}
+.manual-review-feedback button:not([hidden]){margin-top:8px}
+.manual-review-feedback button[hidden]{display:none}
+.manual-review-history li{padding:9px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+.manual-review-history li:last-child{border-bottom:0}
+.manual-review-history p{margin:2px 0}
+.manual-review-evidence{white-space:pre-wrap;user-select:text}
+@media(max-width:550px){.manual-review-values{grid-template-columns:1fr;gap:0}}

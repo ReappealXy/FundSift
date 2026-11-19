@@ -14,7 +14,7 @@ function publishProgress(event) {
 const store = new WorkspaceStore({ schemaPath: process.argv[2], onProgress: phase => publishProgress({ phase }) });
 const desktopData = new DesktopData(store, { onProgress: publishProgress });
 const dataMethods = new Set(['importFile', 'retryImport', 'reimportMaterial', 'listMaterials', 'queryFlows', 'readFlowSource', 'queryRelations',
-  'getWorkpaperContext', 'exportWorkpaper']);
+  'getWorkpaperContext', 'exportWorkpaper', 'getReview', 'saveReview', 'listReviewHistory']);
 const methods = new Set(['inspectWorkspace', 'openWorkspace', 'listCases', 'createCase', 'openCase', 'close', ...dataMethods]);
 let operation = Promise.resolve();
 

@@ -323,20 +323,30 @@ function readWorkpaper(db, record, expectedDataVersion) {
       FROM source_file s LEFT JOIN import_batch b ON b.id=s.current_batch_id AND b.source_file_id=s.id
         AND b.case_id=s.case_id AND b.status='done'
       WHERE s.case_id=1 AND b.id IS NULL ORDER BY s.id`).all();
-    const readReasons = db.prepare(`SELECT reason_code,detail FROM pending_reason
-      WHERE fund_flow_id=? AND resolved_at IS NULL ORDER BY reason_code`);
-    const readRows = db.prepare(`SELECT flow.*,r.format_key FROM (
+    const readReasons = db.prepare(`SELECT p.reason_code,p.detail FROM pending_reason p
+      WHERE p.fund_flow_id=? AND (p.resolved_at IS NULL OR EXISTS (
+        SELECT 1 FROM review_event e WHERE e.fund_flow_id=p.fund_flow_id AND e.reason_id=p.id AND e.action='resolve'
+      )) ORDER BY p.reason_code`);
+    const readRows = db.prepare(`SELECT flow.*,r.format_key,
+      e.id AS review_baseline_id,e.before_amount,e.before_direction,e.before_status FROM (
       SELECT f.id,f.batch_id,f.source_file_id,f.format_rule_id,f.rule_version,f.source_loc,f.platform,f.acct_no,
         f.peer_acct,f.acct_name,f.peer_name,f.summary,f.txn_type,f.txn_time,f.txn_time_text,
         f.raw_amount_text,f.raw_income_text,f.raw_expense_text,f.raw_direction,f.raw_balance_text,
         f.raw_currency_text,f.raw_record,f.amount,f.direction,f.currency,f.currency_evidence,f.status,
         s.file_name,s.file_sha256,b.parser_version ${EFFECTIVE_FLOW_FROM}
       ) flow LEFT JOIN format_rule r ON r.id=flow.format_rule_id AND r.rule_version=flow.rule_version
+      LEFT JOIN review_event e ON e.id=(SELECT first.id FROM review_event first
+        WHERE first.fund_flow_id=flow.id AND first.action='resolve' ORDER BY first.id LIMIT 1)
       ORDER BY (flow.txn_time IS NULL),flow.txn_time,flow.source_file_id,flow.source_loc COLLATE BINARY,flow.id`).safeIntegers();
     const counts = newCounts(), platforms = new Map(), reasonSummary = new Map(), rows = [];
     const recordCounts = new Map(Object.values(RECORD).map(label => [label, 0]));
     let hasEscapedText = false;
     for (const row of readRows.iterate()) {
+      if (row.review_baseline_id !== null) {
+        row.amount = row.before_amount;
+        row.direction = row.before_direction;
+        row.status = row.before_status;
+      }
       const reasons = readReasons.all(row.id);
       for (const item of reasons) {
         const previous = reasonSummary.get(item.reason_code);
@@ -389,7 +399,7 @@ function summarySheet(workbook, record, snapshot, exportedAt) {
   title.getCell(1).font = { ...font, bold: true, size: 14 };
   title.height = 28;
   title.commit();
-  add(['用途', '本表为规则结果、未经人工复核。在 Excel 里改不算复核，也不会写回案件。'], 33);
+  add(['用途', '本表展示导入规则的初始结果和待核原因。人工复核请在软件中查看。在 Excel 里改不算复核，也不会写回案件。'], 45);
   add(['案件', record.case_no + ' · ' + record.case_name], 26);
   add(['底稿格式版本', WORKPAPER_FORMAT_VERSION]);
   add(['数据版本', snapshot.dataVersion]);

@@ -17,13 +17,16 @@ contextBridge.exposeInMainWorld('fundsiftDesktop', Object.freeze({
   queryFlows: (caseId, options) => ipcRenderer.invoke('fundsift:query-flows', caseId, options),
   queryRelations: (caseId, options) => ipcRenderer.invoke('fundsift:query-relations', caseId, options),
   readFlowSource: (caseId, options) => ipcRenderer.invoke('fundsift:read-flow-source', caseId, options),
+  getReview: (caseId, flowId) => ipcRenderer.invoke('fundsift:get-review', caseId, flowId),
+  saveReview: (caseId, payload) => ipcRenderer.invoke('fundsift:save-review', caseId, payload),
+  listReviewHistory: (caseId, sourceFileId) => ipcRenderer.invoke('fundsift:list-review-history', caseId, sourceFileId),
   onOperationStatus: callback => {
     if (typeof callback !== 'function') throw new TypeError('状态监听需要一个函数。');
     const phases = new Set(['queued', 'running', 'choosing-location', 'confirming-location', 'checking', 'backing-up', 'verifying-backup', 'upgrading', 'saving-settings',
       'choosing-file', 'confirming-import', 'archiving', 'parsing', 'importing', 'verifying-archive', 'publishing', 'reading-source',
       'reading-export', 'writing-export', 'completed', 'failed']);
     const operations = new Set(['get-state', 'list-cases', 'choose-workspace', 'create-case', 'open-case', 'choose-import', 'retry-import', 'reimport-material',
-      'list-materials', 'query-flows', 'read-flow-source', 'query-relations', 'export-workpaper']);
+      'list-materials', 'query-flows', 'read-flow-source', 'query-relations', 'export-workpaper', 'get-review', 'save-review', 'list-review-history']);
     const listener = (_event, value) => {
       if (!value || !Number.isSafeInteger(value.operationId) || value.operationId < 1 ||
           !operations.has(value.operation) || !phases.has(value.phase) ||
