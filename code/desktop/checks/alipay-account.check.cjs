@@ -181,6 +181,66 @@ test('成功状态精确词表，可退款不等于已退款，新成功字样�
   assert.ok(output.rows.slice(3).every(row => row.status === 'pending' && codes(row).includes('business_status_unknown')));
 });
 
+const transferSource = overrides => values({
+  6: '即时到账交易', 8: values()[7], 9: '\t余额宝-自动转入', 10: '123.45', 11: '其它',
+  12: '交换产品-余额实时转余额宝成功', 13: '余额', ...overrides
+});
+const transferRule = overrides => rule({ rule_version: 2, business_status_policy: 'exact_v2', ...overrides });
+const transferOptions = { rule: transferRule(), policy: policy({ businessStatusPolicy: 'exact_v2' }) };
+
+test('v2只用原件同主体和精确产品证据确认余额转入余额宝，保留标准方向待核', async () => {
+  const original = transferSource();
+  const row = (await rows(bytes([original]), transferOptions)).rows[0];
+  assert.equal(row.status, 'pending');
+  assert.equal(row.amount, null);
+  assert.equal(row.direction, null);
+  assert.deepEqual(codes(row), ['direction_unknown']);
+  assert.deepEqual(row.raw_values, original);
+  assert.deepEqual(row.derivation.internal_transfer, {
+    kind: 'balance_to_yuebao', account_change: true, economic_inclusion: false, amount_minor: '12345',
+    evidence: { status: original[12], transaction_type: original[6], summary: original[9], payment_method: original[13], same_original_identity: true }
+  });
+  for (const options of [{}, { ...transferOptions, rule: transferRule({ rule_version: 1 }) },
+    { ...transferOptions, rule: rule({ rule_version: 2 }) }, { ...transferOptions, policy: policy() },
+    { ...transferOptions, rule: transferRule({ review: { status: 'approved' } }) }]) {
+    const unchanged = (await rows(bytes([original]), options)).rows[0];
+    assert.equal(unchanged.derivation.internal_transfer, undefined);
+    assert.equal(unchanged.status, 'pending');
+    assert.ok(codes(unchanged).some(code => code.startsWith('business_status_')));
+  }
+});
+
+test('v2不把其它余额宝业务、缺失关系证据或同名不同标识识别为内部划转', async () => {
+  const differences = [
+    { 12: '交易中途关闭（未完成）' }, { 12: '交换产品-余额宝转余额成功' }, { 12: '交换产品-余额实时转余额宝成功 ' },
+    { 7: '合成身份', 8: '合成身份' }, { 7: '', 8: '' }, { 8: '\t0000000000000002(合成身份)' },
+    { 6: '消费' }, { 9: '余额宝收益发放' }, { 9: '余额宝红包' }, { 9: '余额宝收费' },
+    { 13: '银行卡' }, { 11: '支出' }
+  ];
+  const output = (await rows(bytes(differences.map(transferSource)), transferOptions)).rows;
+  assert.ok(output.every(row => row.derivation.internal_transfer === undefined));
+  assert.ok(codes(output[0]).includes('business_status_closed'));
+  assert.ok(output.slice(1).every(row => codes(row).includes('business_status_unknown')));
+});
+
+test('v2划转原文金额有单独证据门槛，负号、零、超精度和超界不产生参考分值', async () => {
+  const inputs = [
+    ['-1.00', 'sign_semantics_undefined'], ['0', 'zero_rule_undefined'], ['0.005', 'amount_transfer_precision'],
+    ['92233720368547758.08', 'amount_out_of_range'], ['', 'amount_missing'], ['未知', 'amount_unparseable']
+  ];
+  const output = (await rows(bytes(inputs.map(([amount]) => transferSource({ 10: amount }))), transferOptions)).rows;
+  for (let index = 0; index < inputs.length; index++) {
+    assert.equal(output[index].derivation.internal_transfer.amount_minor, null);
+    assert.ok(codes(output[index]).includes(inputs[index][1]));
+    assert.equal(output[index].amount, null);
+    assert.equal(output[index].direction, null);
+  }
+  const unverified = (await rows(bytes([transferSource()]), { ...transferOptions,
+    rule: transferRule({ currency_policy: 'unverified' }) })).rows[0];
+  assert.equal(unverified.derivation.internal_transfer.amount_minor, null);
+  assert.ok(codes(unverified).includes('currency_missing'));
+});
+
 test('未批准规则与policy不输出伪confirmed，原始身份不拆不trim', async () => {
   const config = rule({ review: { status: 'unreviewed' }, currency_policy: 'unverified' });
   const row = (await rows(bytes(), { rule: config, policy: {} })).rows[0];

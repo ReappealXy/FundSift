@@ -205,17 +205,45 @@ async function run({ app, window, worker, config, getState, saveSettings, setWor
       await js('document.querySelector("[data-action=desktop-export-workpaper]").click()');
       await wait('document.querySelector(".workpaper-receipt") !== null');
       const exported = await fs.readdir(config.exportFolder);
-      verify(exported.length === 1 && /^流水核对底稿-格式v2-数据v\d+-\d{8}T\d{9}Z\.xlsx$/.test(exported[0]), 'renderer exports one format-v2 XLSX and no temporary file');
+      verify(exported.length === 1 && /^流水核对底稿-格式v3-数据v\d+-\d{8}T\d{9}Z\.xlsx$/.test(exported[0]), 'renderer exports one format-v3 XLSX and no temporary file');
       const workbook = new (require('exceljs').Workbook)();
       const workpaper = path.join(config.exportFolder, exported[0]);
       await workbook.xlsx.readFile(workpaper);
       verify(workbook.getWorksheet('流水明细')?.rowCount === 7 && workbook.getWorksheet('导出说明'), 'packaged export reopens with six effective records and the explanation sheet');
       const headers = workbook.getWorksheet('流水明细').getRow(1).values;
-      verify(['原始金额单位', '原件收付记载', '原件记载说明', '摘要', '交易类型', '本方名称', '对方名称'].every(header => headers.includes(header)), 'reopened workbook includes the approved v2 evidence columns');
+      verify(['原始金额单位', '原件收付记载', '原件记载说明', '摘要', '交易类型', '本方名称', '对方名称', '是否计入经济收支'].every(header => headers.includes(header)), 'reopened workbook includes transfer and source evidence columns');
       await fs.copyFile(workpaper, config.screenshot.replace('.png', '-workpaper.xlsx'));
       await fs.writeFile(config.screenshot.replace('.png','-workpaper1024.png'),(await window.webContents.capturePage()).toPNG());
       window.setContentSize(1440,960);
     }
+  }
+  if (config.phase === 'reopen') {
+    const first = initial.cases.find(item => item.number === 'M0-SMOKE-001');
+    const second = initial.cases.find(item => item.number === 'M0-SMOKE-002');
+    const chooseCase = async item => {
+      await js('document.querySelector("[data-action=switch-case]").click()');
+      await js('document.querySelector(' + JSON.stringify('[data-action=choose-case][data-id="' + item.id + '"]') + ').click()');
+      await wait('!document.querySelector("#modal-root .modal") && document.querySelector("#sidebar .case-label").textContent === ' + JSON.stringify(item.number));
+    };
+    await chooseCase(second);
+    await js('document.querySelector("[data-action=nav][data-route=materials]").click()');
+    await wait('document.querySelector("[data-action=desktop-reimport-material]:not(:disabled)") !== null');
+    const before = (await worker.request('listMaterials', second.id)).materials[0];
+    verify(before.canReimport && before.ruleVersion === '1', 'existing rule v1 material offers deliberate reimport');
+    await js('document.querySelector("[data-action=desktop-reimport-material]").click()');
+    await wait('document.querySelector(".import-receipt")?.textContent.includes("导入已发布") && !document.querySelector("[data-action=desktop-reimport-material]")');
+    const after = (await worker.request('listMaterials', second.id)).materials[0];
+    verify(after.id === before.id && after.currentBatchId !== before.currentBatchId && after.ruleVersion === '2' && !after.canReimport,
+      'reimport switches the effective result to rule v2 for the same original material');
+    await js('document.querySelector("[data-action=nav][data-route=flows]").click()');
+    await wait('document.querySelector(".desktop-ledger")?.textContent.includes("内部划转")');
+    const flows = await worker.request('queryFlows', second.id);
+    verify(flows.total === '1' && flows.rows[0].amount === null && flows.rows[0].direction === null && flows.rows[0].status === 'pending',
+      'one effective reimported record retains the dimension-specific pending status');
+    const source = await worker.request('readFlowSource', second.id, { flowId:flows.rows[0].id, dataVersion:flows.dataVersion });
+    verify(source.savedDerivation.internal_transfer.amount_minor === '428' && source.savedDerivation.internal_transfer.economic_inclusion === false,
+      'published rule and exact original magnitude can be verified by desktop source lookup');
+    await chooseCase(first);
   }
   // Navigate back to the real workbench before capturing the shipped interface.
   await js('document.querySelector("[data-action=nav][data-route=home]")?.click()');

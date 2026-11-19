@@ -31,13 +31,13 @@ async function launch(config, configPath) {
   });
 }
 
-async function seedLegacy(workspace, profile) {
+async function seed(script, ...args) {
   await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ['scripts/run-electron-node.cjs', 'scripts/seed-v1-smoke.cjs', workspace, profile], {
+    const child = spawn(process.execPath, ['scripts/run-electron-node.cjs', script, ...args], {
       cwd: root, windowsHide: true, stdio: 'inherit'
     });
     child.once('error', reject);
-    child.once('exit', code => code === 0 ? resolve() : reject(new Error('Legacy fixture failed: ' + code)));
+    child.once('exit', code => code === 0 ? resolve() : reject(new Error('Smoke fixture failed: ' + code)));
   });
 }
 
@@ -56,11 +56,12 @@ async function seedLegacy(workspace, profile) {
   const exportFolder = path.join(temp, 'export-output');
   await fs.mkdir(exportFolder);
   const legacyWorkspace = path.join(temp, 'legacy-workspace'), legacyProfile = path.join(temp, 'legacy-profile');
-  await seedLegacy(legacyWorkspace, legacyProfile);
+  await seed('scripts/seed-v1-smoke.cjs', legacyWorkspace, legacyProfile);
   const upgrade = { phase: 'upgrade', profile: legacyProfile, workspace: legacyWorkspace, result: path.join(output, 'upgrade.json'), screenshot: path.join(output, 'upgrade.png') };
   results.push(await launch(upgrade, path.join(temp, 'upgrade.json')));
   console.log('PASS ' + (packaged ? 'packaged ' : '') + 'v1 upgrade');
   for (const phase of ['create', 'reopen']) {
+    if (phase === 'reopen') await seed('scripts/import-smoke-fixtures.cjs', workspace, importDirectory);
     const config = { phase, profile, workspace, ...(phase === 'create' ? {
       importFixtures: [...importFixtures, importFixtures[0], failedFixture], exportFolder
     } : {}), result: path.join(output, phase + '.json'), screenshot: path.join(output, phase + '.png') };

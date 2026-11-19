@@ -6,7 +6,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
-const { normalizeMoney, validateMoneyRule } = require('./money.cjs');
+const { INT64_MAX, normalizeMoney, parseMinor, validateMoneyRule } = require('./money.cjs');
 
 const FORMAT_KEY = 'alipay-account-17col-v1';
 const MAX_BYTES = 64 * 1024 * 1024;
@@ -14,6 +14,7 @@ const HEADERS = Object.freeze(['交易号', '商户订单号', '交易创建时�
   '用户信息', '交易对方信息', '消费名称', '金额（元）', '收/支', '交易状态', '支付方式', '清算流水号', '备注', '对应的协查数据']);
 const SUCCESS = new Set(['转账成功', '交易成功可以退款', '交易成功']);
 const CLOSED = '交易中途关闭（未完成）';
+const BALANCE_TO_YUEBAO = '交换产品-余额实时转余额宝成功';
 const own = (value, key) => Object.hasOwn(value, key);
 const blank = value => value === null || value === undefined || typeof value === 'string' && value.trim() === '';
 const abort = signal => { if (signal?.aborted) fail('FS_USER_CANCELLED', '已取消文件读取，未发布导入结果。'); };
@@ -184,6 +185,37 @@ function policyApproved(policy) {
   return policy?.review?.status === 'approved' && ['by', 'at', 'reason'].every(key => typeof policy.review[key] === 'string' && policy.review[key].trim() !== '');
 }
 
+function recordedTransferAmount(text, money, add) {
+  if (money.currency !== 'CNY' || blank(text) || money.reasons.some(reason => reason.reason_code === 'amount_unparseable')) return null;
+  const { value, rounded } = parseMinor(text, '元');
+  if (text.trimStart().startsWith('-')) {
+    add('sign_semantics_undefined', '内部划转原文金额有负号，划转金额仍待核。');
+  } else if (rounded) {
+    add('amount_transfer_precision', '内部划转原文金额无法无损换算为整数分，划转金额仍待核。');
+  } else if (value === 0n) {
+    add('zero_rule_undefined', '内部划转原文金额为零，划转金额仍待核。');
+  } else if (value > INT64_MAX) {
+    add('amount_out_of_range', '内部划转原文金额超出有符号 64 位整数范围。');
+  } else {
+    return value.toString();
+  }
+  return null;
+}
+
+function internalTransfer(values, acctNo, money, add) {
+  const [, , , , , , transactionType, owner, peer, summary, amount, direction, status, paymentMethod] = values;
+  if (status !== BALANCE_TO_YUEBAO || direction !== '其它' || transactionType !== '即时到账交易' ||
+      paymentMethod !== '余额' || summary.replace(/^\t/, '') !== '余额宝-自动转入' || acctNo === null || owner !== peer) return null;
+  // A complete original identifier and its account name must match across both parties.
+  const identity = /^\t?[0-9]+\(([^()\r\n\t]+)\)(?![\s\S])/u.exec(owner);
+  if (!identity || blank(identity[1])) return null;
+  return {
+    kind: 'balance_to_yuebao', account_change: true, economic_inclusion: false,
+    amount_minor: recordedTransferAmount(amount, money, add),
+    evidence: { status, transaction_type: transactionType, summary, payment_method: paymentMethod, same_original_identity: true }
+  };
+}
+
 function rowResult(values, coordinate, rule, policy) {
   const raw_fields = Object.fromEntries(HEADERS.map((name, index) => [name, values[index]]));
   const money = normalizeMoney({ raw_amount_text: values[10], raw_direction: values[11], currency_text: null }, rule);
@@ -205,14 +237,20 @@ function rowResult(values, coordinate, rule, policy) {
     add('account_missing', '标准本方标识尚未确定，原始用户信息完整保留。');
   } else if (blank(values[7])) add('account_missing', '原始用户信息缺失，不能按姓名或其它账号补位。');
   else acct_no = values[7];
-  if (!approved || policy.businessStatusPolicy !== 'exact_v1') add('business_status_policy_unapproved', '业务状态政策尚未批准，不能按成功字样确认。');
+  const transferPolicyApproved = approved && policy.businessStatusPolicy === 'exact_v2' &&
+    rule.rule_version === 2 && rule.business_status_policy === 'exact_v2' && policyApproved(rule);
+  const transfer = transferPolicyApproved ? internalTransfer(values, acct_no, money, add) : null;
+  if (!(approved && policy.businessStatusPolicy === 'exact_v1') && !transferPolicyApproved) {
+    add('business_status_policy_unapproved', '业务状态政策尚未批准，不能按成功字样确认。');
+  }
   else if (values[12] === CLOSED) add('business_status_closed', '原始状态为交易关闭或未完成，保留该行但不计入已确认收付。');
-  else if (!SUCCESS.has(values[12])) add('business_status_unknown', '原始业务状态不在本格式已批准的精确成功词表中。');
+  else if (!transfer && !SUCCESS.has(values[12])) add('business_status_unknown', '原始业务状态不在本格式已批准的精确成功词表中。');
   const source_loc = coordinate.toString();
   const derivation = { money: money.derivation, time_column: '付款时间', time_fallback: false,
     account_identity_policy: approved ? policy.accountIdentityPolicy ?? null : null,
     account_identity_type: acct_no === null ? null : 'platform_user_info_raw',
-    business_status_policy: approved ? policy.businessStatusPolicy ?? null : null };
+    business_status_policy: approved ? policy.businessStatusPolicy ?? null : null,
+    ...(transfer ? { internal_transfer: transfer } : {}) };
   return {
     source_loc, raw_values: [...values], raw_fields,
     raw_record: JSON.stringify({ format_key: FORMAT_KEY, source_loc, values }),

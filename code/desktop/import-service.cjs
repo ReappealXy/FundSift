@@ -56,17 +56,18 @@ function configFor(rule) {
   validateRuleConfig(config);
   if(config.review.status!=='approved')fail('FS_IMPORT_APPROVAL','本格式规则尚未批准，不能导入。');
   const wx=rule.format_key==='wechat-trades-27col-v1', ccb=rule.format_key==='ccb-account-32col-v1';
-  if(config.amount_expr!=='E' || config.source_unit!==(wx?'分':'元') || config.unit_scale!==(wx?1:100) || config.negative_policy!=='pending' ||
+  if((config.business_status_policy!==undefined && (rule.format_key!==FORMAT_KEY || rule.rule_version!==2)) ||
+    config.amount_expr!=='E' || config.source_unit!==(wx?'分':'元') || config.unit_scale!==(wx?1:100) || config.negative_policy!=='pending' ||
     config.zero_policy!=='pending' || canonicalJSON(config.direction_map)!==canonicalJSON(wx?{入:'进',出:'出'}:ccb?{借:'出',贷:'进'}:{收入:'进',支出:'出'})) {
     fail('FS_IMPORT_RULE','规则卡不属于本技术预览支持的具体结构。');
   }
   return JSON.parse(canonicalJSON(config));
 }
-function policyFor(policy,formatKey=FORMAT_KEY) {
+function policyFor(policy,formatKey=FORMAT_KEY,config) {
   const wx=formatKey==='wechat-trades-27col-v1',ccb=formatKey==='ccb-account-32col-v1';
   const expected=wx?{timeColumn:'交易时间',accountIdentityPolicy:'raw_platform_user_id',receiverAmountPolicy:'mismatch_pending',balancePolicy:'preserve_unknown'}:
     ccb?{timeColumn:'交易日期+交易时间',accountIdentityPolicy:'raw_bank_account',balancePolicy:'preserve_unknown'}:
-    {timeColumn:'付款时间',accountIdentityPolicy:'raw_platform_info',businessStatusPolicy:'exact_v1'};
+    {timeColumn:'付款时间',accountIdentityPolicy:'raw_platform_info',businessStatusPolicy:config?.business_status_policy??'exact_v1'};
   const allowed=[...Object.keys(expected),'review'];
   if(!policy || typeof policy!=='object' || Array.isArray(policy) || Object.keys(policy).some(key=>!allowed.includes(key)) ||
     Object.entries(expected).some(([key,value])=>policy[key]!==value) ||
@@ -185,9 +186,9 @@ function writeChunk(db,record,sourceId,batchId,storedRule,rows) {
 function batchRuleBinding(db,batch) {
   let notes;
   try { notes=JSON.parse(batch.notes); }
-  catch (_) { fail('FS_IMPORT_RETRY_RULE','失败批次的规则记录无法读取。'); }
+  catch (_) { fail('FS_IMPORT_RETRY_RULE','原批次的规则记录无法读取。'); }
   if (!notes || notes.preview!==true || !Number.isSafeInteger(notes.rule_id) || !Number.isSafeInteger(notes.rule_version)) {
-    fail('FS_IMPORT_RETRY_RULE','失败批次缺少可以核验的规则记录。');
+    fail('FS_IMPORT_RETRY_RULE','原批次缺少可以核验的规则记录。');
   }
   const stored=db.prepare(`SELECT r.id,r.platform,r.format_key,r.rule_version,r.frozen,r.source_evidence,
     c.config_json,c.config_sha256,c.approved_by FROM format_rule r JOIN format_rule_config c
@@ -204,7 +205,7 @@ function batchRuleBinding(db,batch) {
     fail('FS_IMPORT_RETRY_RULE','规则版本的冻结配置或批准依据不一致。');
   }
   return {storedRule:stored,config,adapter:FORMATS[format_key],binding:{platform,format_key,rule_version,source_evidence},
-    approvedPolicy:policyFor(notes.policy,format_key),archiveTaskId:notes.archiveTaskId};
+    approvedPolicy:policyFor(notes.policy,format_key,config),archiveTaskId:notes.archiveTaskId};
 }
 
 function failedRetrySource(db,sourceId) {
@@ -233,30 +234,102 @@ async function retryFailedImport({db,record,caseDirectory,sourceFileId,signal,on
   return importSourceFile({db,record,caseDirectory,signal,onProgress,retrySourceId});
 }
 
-async function importSourceFile({db,record,caseDirectory,filePath,rule,policy,signal,onProgress,reimport=false,retrySourceId=null}={}) {
+function currentReimportSource(db, { sourceId, previousBatchId }, ownBatchId = 0) {
+  const source = db.prepare(`SELECT s.file_sha256,s.file_size,s.format_rule_id,s.archive_entry_id,
+    b.archive_entry_id AS batch_archive_entry_id,b.parser_version,b.notes,b.imported_rows,b.total_rows,b.skipped_rows,
+    a.expected_sha256,a.copied_sha256,a.size_bytes,a.final_relative_path,a.status AS archive_status
+    FROM source_file s JOIN import_batch b ON b.id=s.current_batch_id AND b.source_file_id=s.id
+      AND b.case_id=s.case_id AND b.status='done'
+    JOIN format_rule r ON r.id=s.format_rule_id AND r.format_key=? AND r.rule_version=1
+    LEFT JOIN archive_entry a ON a.id=b.archive_entry_id
+    WHERE s.id=? AND s.case_id=1 AND s.status='imported' AND s.current_batch_id=?
+    AND NOT EXISTS(SELECT 1 FROM import_batch other WHERE other.source_file_id=s.id AND other.id<>?
+      AND other.status IN ('pending','parsing','importing'))`).safeIntegers().get(FORMAT_KEY,sourceId,previousBatchId,ownBatchId);
+  if (!source) fail('FS_IMPORT_REIMPORT_STATE','支付宝材料的当前批次已变更或不适用规则更新，请刷新材料列表。');
+  if (source.archive_entry_id!==source.batch_archive_entry_id || source.archive_status!=='verified' ||
+      source.expected_sha256!==source.file_sha256 || source.copied_sha256!==source.file_sha256 ||
+      (source.file_size!==null && source.file_size!==source.size_bytes)) {
+    fail('FS_ARCHIVE_HASH','当前材料的原件归档无法核验，请恢复对应归档副本。');
+  }
+  if (source.total_rows===null || source.total_rows!==source.imported_rows || source.skipped_rows!==0n) {
+    fail('FS_IMPORT_REIMPORT_STATE','原批次未留下可以核验的完整行数，无法按新规则重新导入。');
+  }
+  return source;
+}
+
+function assertReimportRecords(db,sourceId,previousBatchId,batchId,previousRuleId,previousTotal,written) {
+  const previousCount=db.prepare('SELECT count(*) AS n FROM fund_flow WHERE batch_id=? AND source_file_id=?')
+    .safeIntegers().get(previousBatchId,sourceId).n;
+  const mismatch=db.prepare(`SELECT old.id FROM fund_flow old LEFT JOIN fund_flow fresh
+    ON fresh.batch_id=? AND fresh.source_file_id=old.source_file_id AND fresh.source_loc=old.source_loc
+    WHERE old.batch_id=? AND old.source_file_id=? AND (
+      old.format_rule_id IS NOT ? OR old.rule_version IS NOT 1 OR fresh.id IS NULL OR
+      CASE WHEN json_valid(old.raw_record) AND json_valid(fresh.raw_record)
+        THEN json_type(old.raw_record,'$.values') IS NOT 'array' OR
+          json_extract(old.raw_record,'$.values') IS NOT json_extract(fresh.raw_record,'$.values')
+        ELSE 1 END) LIMIT 1`).get(batchId,previousBatchId,sourceId,previousRuleId);
+  if (previousTotal!==BigInt(written) || previousCount!==previousTotal || mismatch) {
+    fail('FS_IMPORT_REIMPORT_RECORDS','新旧批次的原文行数、来源坐标或原值不一致，未切换当前批次。');
+  }
+}
+
+async function reimportApprovedSource({db,record,caseDirectory,sourceFileId,expectedBatchId,rule,signal,onProgress}={}) {
+  const asId = value => {
+    if (typeof value!=='string' || !/^[1-9]\d{0,15}(?![\s\S])/u.test(value) || BigInt(value)>BigInt(Number.MAX_SAFE_INTEGER)) {
+      fail('FS_IMPORT_REIMPORT_STATE','请选择有效的支付宝材料及其当前批次。');
+    }
+    return Number(value);
+  };
+  if (rule?.format_key!==FORMAT_KEY || rule.rule_version!==2 || rule.business_status_policy!=='exact_v2') {
+    fail('FS_IMPORT_REIMPORT_RULE','仅支持按已批准的支付宝账户规则 v2 重新导入。');
+  }
+  return importSourceFile({db,record,caseDirectory,signal,onProgress,rule},
+    {sourceId:asId(sourceFileId),previousBatchId:asId(expectedBatchId)});
+}
+
+async function importSourceFile({db,record,caseDirectory,filePath,rule,policy,signal,onProgress,reimport=false,retrySourceId=null}={},approvedReimport=null) {
   assertCase(db,record);
   assertCaseDirectory(db,caseDirectory);
   if(active.has(db))fail('FS_IMPORT_BUSY','当前案件已有导入任务，请等待完成。');
   const isRetry=retrySourceId!==null;
+  const isApprovedReimport=approvedReimport!==null;
   let config,approvedPolicy,adapter,binding;
   if (!isRetry) {
     config=configFor(rule);
-    approvedPolicy=policyFor(policy,rule.format_key);
     adapter=FORMATS[rule.format_key];
     binding={platform:rule.platform,format_key:rule.format_key,rule_version:rule.rule_version,source_evidence:rule.source_evidence??null};
-    if(typeof reimport!=='boolean'||typeof filePath!=='string')fail('FS_IMPORT_INPUT','导入参数无效。');
-    const inputStat=fs.lstatSync(filePath);
-    if(!inputStat.isFile()||inputStat.isSymbolicLink()||inputStat.size>MAX_BYTES)fail('FS_IMPORT_SIZE','技术预览仅支持不超过64MiB的普通文件。');
+    if (!isApprovedReimport) {
+      approvedPolicy=policyFor(policy,rule.format_key,config);
+      if(typeof reimport!=='boolean'||typeof filePath!=='string')fail('FS_IMPORT_INPUT','导入参数无效。');
+      const inputStat=fs.lstatSync(filePath);
+      if(!inputStat.isFile()||inputStat.isSymbolicLink()||inputStat.size>MAX_BYTES)fail('FS_IMPORT_SIZE','技术预览仅支持不超过64MiB的普通文件。');
+    }
   }
   active.add(db);
-  let sourceId=isRetry?Number(retrySourceId):null,batchId=null,metadata=null,written=0,pending=0,unquantifiable=0,diagnosticRows=0;
+  let sourceId=isRetry?Number(retrySourceId):approvedReimport?.sourceId??null,batchId=null,batchCreated=false;
+  let metadata=null,written=0,pending=0,unquantifiable=0,diagnosticRows=0;
   try {
     cancelled(signal);
     let found,storedRule,archiveId,staged;
-    if (isRetry) {
-      found=failedRetrySource(db,retrySourceId);
+    if (isRetry || isApprovedReimport) {
+      found=isRetry?failedRetrySource(db,retrySourceId):currentReimportSource(db,approvedReimport);
       const previous=batchRuleBinding(db,found);
-      ({config,approvedPolicy,adapter,binding,storedRule}=previous);
+      if (isRetry) {
+        ({config,approvedPolicy,adapter,binding,storedRule}=previous);
+      } else {
+        if (previous.binding.format_key!==FORMAT_KEY || previous.binding.platform!==binding.platform ||
+            previous.storedRule.rule_version!==1 || BigInt(previous.storedRule.id)!==found.format_rule_id ||
+            previous.config.currency_policy!=='verified_cny' || config.currency_policy!=='verified_cny' ||
+            config.business_status_policy!=='exact_v2') {
+          fail('FS_IMPORT_REIMPORT_RULE','原批次的冻结规则或人民币确认依据与本次规则更新不符。');
+        }
+        const unchangedMoneyKeys=Object.keys(previous.config).filter(key=>!['review','reversal_note'].includes(key));
+        if (unchangedMoneyKeys.some(key=>canonicalJSON(previous.config[key])!==canonicalJSON(config[key]))) {
+          fail('FS_IMPORT_REIMPORT_RULE','本次规则更新仅适用内部划转识别，原批次的金额或币种规则不同。');
+        }
+        approvedPolicy=policyFor({...previous.approvedPolicy,businessStatusPolicy:'exact_v2'},binding.format_key,config);
+        storedRule=registerRule(db,record,binding,config);
+      }
       archiveId=Number(found.batch_archive_entry_id);
       staged={taskId:previous.archiveTaskId,finalRelativePath:found.final_relative_path,
         expectedSha256:found.file_sha256,sizeBytes:found.size_bytes};
@@ -272,23 +345,26 @@ async function importSourceFile({db,record,caseDirectory,filePath,rule,policy,si
     batchId=id(db,'import_batch');
     const timestamp=new Date().toISOString();
     const notes=canonicalJSON({preview:true,policy:approvedPolicy,policy_sha256:sha256(canonicalJSON(approvedPolicy)),
-      rule_id:storedRule.id,rule_version:storedRule.rule_version,config_sha256:sha256(canonicalJSON(config)),archiveTaskId:staged.taskId});
+      rule_id:storedRule.id,rule_version:storedRule.rule_version,config_sha256:sha256(canonicalJSON(config)),archiveTaskId:staged.taskId,
+      ...(isApprovedReimport?{previousBatchId:approvedReimport.previousBatchId}:{})});
     runCaseTransaction(db,record,{sourceFileIds:[sourceId]},()=>{
       if (isRetry && failedRetrySource(db,retrySourceId).latest_batch_id!==found.latest_batch_id) {
         fail('FS_IMPORT_RETRY_STATE','原失败批次已变化，请刷新材料列表。');
       }
+      if (isApprovedReimport) currentReimportSource(db,approvedReimport);
       if(!found)db.prepare(`INSERT INTO source_file(id,case_id,file_name,file_path,file_size,file_sha256,format_rule_id,archive_entry_id,perspective)
         VALUES(?,1,?,?,?,?,?,?,'transaction')`).run(sourceId,path.basename(filePath),staged.finalRelativePath,BigInt(staged.sizeBytes),staged.expectedSha256,storedRule.id,archiveId);
       db.prepare(`INSERT INTO import_batch(id,case_id,source_file_id,started_at,parser_version,status,archive_entry_id,notes)
         VALUES(?,1,?,? ,?,'parsing',?,?)`).run(batchId,sourceId,timestamp,adapter.version,archiveId,notes);
       db.prepare('UPDATE source_file SET first_batch_id=coalesce(first_batch_id,?) WHERE id=?').run(batchId,sourceId);
     });
+    batchCreated=true;
     cancelled(signal);
     const openSource=require(adapter.module)[adapter.open];
     let archived;
     try { archived=archivePath(caseDirectory,staged.finalRelativePath,staged.expectedSha256); }
     catch (error) {
-      if (isRetry && error.code==='ENOENT') fail('FS_ARCHIVE_HASH','失败材料的归档副本已失联，请恢复对应归档副本后重试。');
+      if ((isRetry || isApprovedReimport) && error.code==='ENOENT') fail('FS_ARCHIVE_HASH','材料的归档副本已失联，请恢复对应归档副本后重试。');
       throw error;
     }
     progress(onProgress,{phase:'parsing'});
@@ -297,11 +373,14 @@ async function importSourceFile({db,record,caseDirectory,filePath,rule,policy,si
     metadata=parsed.metadata;
     if(metadata.formatKey!==binding.format_key||metadata.sha256!==staged.expectedSha256||BigInt(metadata.sizeBytes)!==BigInt(staged.sizeBytes)||
       !Number.isSafeInteger(metadata.dataRecordCount)||metadata.dataRecordCount<0)fail('FS_IMPORT_METADATA','解析材料身份或数据行数与归档不一致。');
-    runCaseTransaction(db,record,{sourceFileIds:[sourceId]},()=>{
+    const updateMaterialMetadata=()=>{
       db.prepare(`UPDATE source_file SET encoding_observed=?,format_observed=?,header_rows=?,data_rows=?,trailer_rows=?,unclassified_rows=0,
         coverage_complete=1,observations_json=? WHERE id=?`).run(metadata.encoding,metadata.formatKey,metadata.headerRecordCount,
         metadata.dataRecordCount,metadata.nonDataRecordCount-metadata.headerRecordCount,
         canonicalJSON({bom:metadata.bom,columns:metadata.columns,sheetName:metadata.sheetName??null,referenceSheets:metadata.referenceSheets??[]}),sourceId);
+    };
+    runCaseTransaction(db,record,{sourceFileIds:[sourceId]},()=>{
+      if (!isApprovedReimport) updateMaterialMetadata();
       db.prepare("UPDATE import_batch SET status='importing',total_rows=? WHERE id=?").run(metadata.dataRecordCount,batchId);
     });
     const coordinates=new Set();let chunk=[];
@@ -328,6 +407,10 @@ async function importSourceFile({db,record,caseDirectory,filePath,rule,policy,si
       if (isRetry && db.prepare('SELECT current_batch_id FROM source_file WHERE id=?').get(sourceId).current_batch_id!==null) {
         fail('FS_IMPORT_RETRY_STATE','此材料已有有效结果，请刷新材料列表。');
       }
+      if (isApprovedReimport) {
+        const current=currentReimportSource(db,approvedReimport,batchId);
+        assertReimportRecords(db,sourceId,approvedReimport.previousBatchId,batchId,current.format_rule_id,current.total_rows,written);
+      }
       const counts=db.prepare(`SELECT count(*) AS total,count(DISTINCT source_loc) AS coordinates,
         sum(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,
         sum(CASE WHEN amount IS NULL THEN 1 ELSE 0 END) AS unknown,
@@ -339,15 +422,17 @@ async function importSourceFile({db,record,caseDirectory,filePath,rule,policy,si
       db.prepare(`UPDATE import_batch SET status='done',finished_at=?,total_rows=?,imported_rows=?,skipped_rows=0,
         pending_rows=?,unquantifiable_rows=?,error_rows=0,cancelled_rows=0 WHERE id=?`)
         .run(new Date().toISOString(),written,written,pending,unquantifiable,batchId);
+      if (isApprovedReimport) updateMaterialMetadata();
       db.prepare(`UPDATE source_file SET current_batch_id=?,status='imported',imported_at=?,format_rule_id=?,raw_records=? WHERE id=?`)
         .run(batchId,new Date().toISOString(),storedRule.id,written,sourceId);
     });
     progress(onProgress,{phase:'completed',writtenRows:written,pendingRows:pending,totalRows:written});
     return {state:'completed',preview:true,sourceFileId:sourceId,batchId,parserVersion:adapter.version,totalRows:written,
+      ...(isApprovedReimport?{previousBatchId:approvedReimport.previousBatchId,ruleVersion:storedRule.rule_version}:{}),
       importedRows:written,skippedRows:0,pendingRows:pending,unquantifiableRows:unquantifiable,diagnosticRows,errorRows:0,cancelledRows:0};
   } catch(error) {
     const code=signal?.aborted||error.name==='AbortError'?'FS_USER_CANCELLED':error.code?.startsWith('FS_')?error.code:'FS_IMPORT_FAILED';
-    if(batchId!==null) {
+    if(batchCreated) {
       const existing=db.prepare('SELECT status FROM import_batch WHERE id=?').get(batchId);
       if(existing&&!['done','failed','partial'].includes(existing.status)) {
         runCaseTransaction(db,record,{sourceFileIds:[sourceId]},()=>{
@@ -359,9 +444,10 @@ async function importSourceFile({db,record,caseDirectory,filePath,rule,policy,si
       }
     }
     const wrapped=Object.assign(new Error(code==='FS_USER_CANCELLED'?'已取消导入，原有效批次保持不变。':
-      ['FS_IMPORT_DUPLICATE','FS_IMPORT_RETRY_STATE','FS_IMPORT_RETRY_RULE','FS_ARCHIVE_HASH'].includes(code)?error.message:
+      ['FS_IMPORT_DUPLICATE','FS_IMPORT_RETRY_STATE','FS_IMPORT_RETRY_RULE','FS_IMPORT_REIMPORT_STATE',
+        'FS_IMPORT_REIMPORT_RULE','FS_IMPORT_REIMPORT_RECORDS','FS_ARCHIVE_HASH'].includes(code)?error.message:
         '导入未发布，请根据错误码核对规则或材料；原有效批次保持不变。',{cause:error}),{code});
-    wrapped.receipt={state:code==='FS_USER_CANCELLED'?'cancelled':'failed',sourceFileId:sourceId,batchId,
+    wrapped.receipt={state:code==='FS_USER_CANCELLED'?'cancelled':'failed',sourceFileId:sourceId,batchId:batchCreated?batchId:null,
       importedRows:written,pendingRows:pending,unquantifiableRows:unquantifiable,diagnosticRows,errorCode:code};
     throw wrapped;
   } finally { active.delete(db); }
@@ -398,16 +484,9 @@ function recoverInterruptedImports({db,record,caseDirectory}={}) {
   for(const batch of unfinished) {
     let owned=false;
     try {
-      const notes=JSON.parse(batch.notes);
-      const ruleConfig=Number.isSafeInteger(notes.rule_id)&&Number.isSafeInteger(notes.rule_version)?db.prepare(`SELECT c.config_sha256,r.format_key
-        FROM format_rule_config c JOIN format_rule r ON r.id=c.rule_id AND r.rule_version=c.rule_version
-        WHERE c.rule_id=? AND c.rule_version=?`).get(notes.rule_id,notes.rule_version):null;
-      policyFor(notes.policy,ruleConfig?.format_key);
-      owned=FORMATS[ruleConfig?.format_key]?.version===batch.parser_version&&notes.preview===true&&
-        notes.policy_sha256===sha256(canonicalJSON(notes.policy))&&/^[a-f0-9]{64}$/.test(notes.config_sha256)&&
-        ruleConfig?.config_sha256===notes.config_sha256&&
-        !db.prepare('SELECT id FROM fund_flow WHERE batch_id=? AND (format_rule_id<>? OR rule_version<>?) LIMIT 1')
-          .get(batch.id,notes.rule_id,notes.rule_version);
+      const { storedRule }=batchRuleBinding(db,batch);
+      owned=!db.prepare('SELECT id FROM fund_flow WHERE batch_id=? AND (format_rule_id<>? OR rule_version<>?) LIMIT 1')
+        .get(batch.id,storedRule.id,storedRule.rule_version);
     } catch(_) { /* Unknown producers are reported for explicit review. */ }
     if(!owned) {
       diagnostics.push({batchId:batch.id,sourceFileId:batch.source_file_id,code:'FS_IMPORT_RECOVERY_UNRECOGNIZED',requiresReview:true});
@@ -458,4 +537,4 @@ const importAlipayAccount=options=>{
   if(options?.rule?.format_key!==FORMAT_KEY)fail('FS_IMPORT_RULE','此入口仅支持支付宝账户明细。');
   return importSourceFile(options);
 };
-module.exports={importAlipayAccount,importSourceFile,retryFailedImport,readFlowSource,recoverInterruptedImports,PARSER_VERSION,MAX_BYTES};
+module.exports={importAlipayAccount,importSourceFile,retryFailedImport,reimportApprovedSource,readFlowSource,recoverInterruptedImports,PARSER_VERSION,MAX_BYTES};

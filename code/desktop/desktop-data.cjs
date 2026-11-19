@@ -19,27 +19,30 @@ const FORMATS = Object.freeze({
   'wechat-trades-27col-v1': { platform: '微信', unit: '分', scale: 1, direction: {入:'进',出:'出'} },
   'ccb-account-32col-v1': { platform: '建设银行', unit: '元', scale: 100, direction: {借:'出',贷:'进'} }
 });
+const ALIPAY = 'alipay-account-17col-v1';
 function approvedRule(formatKey) {
-  const format = FORMATS[formatKey], bank = formatKey === 'ccb-account-32col-v1';
-  return { platform: format.platform, format_key: formatKey, rule_version: 1,
+  const format = FORMATS[formatKey], bank = formatKey === 'ccb-account-32col-v1', alipay = formatKey === ALIPAY;
+  return { platform: format.platform, format_key: formatKey, rule_version: alipay ? 2 : 1,
+    ...(alipay ? { business_status_policy: 'exact_v2' } : {}),
     config_version: 1, amount_expr: 'E', rounding_rule: 'ROUND_HALF_UP',
     source_unit: format.unit, unit_scale: format.scale, direction_map: format.direction,
     negative_policy: 'pending', zero_policy: 'pending', zero_direction: null,
     currency_policy: bank ? 'explicit' : 'verified_cny', currency_map: bank ? {'人民币元':'CNY'} : {},
     balance_scope: 'unknown', balance_same_direction: formatKey === 'alipay-account-17col-v1',
     reversal_note: '负额、零额、未知方向及不支持的状态保留待核；不推断冲正。',
-    source_evidence: `已批准的${formatKey}技术预览规则；缺少币种列的材料须逐次由本机操作人核实人民币来源证据。`,
+    source_evidence: alipay ? '项目对话批准的支付宝账户规则 v2。明确同主体余额转余额宝的划转保留账户变动，排除经济收支。规则与证据见 docs/19-支付宝内部划转规则v2.md。'
+      : `已批准的${formatKey}技术预览规则；缺少币种列的材料须逐次由本机操作人核实人民币来源证据。`,
     review: { status: 'approved', by: '项目规则批准人', at: '2026-11-19',
       reason: bank ? '用户批准元转分、借出贷进、负数待核、人民币元映射CNY、账号卡号分开、交易日期加交易时间、余额保留未知口径。'
         : formatKey === 'wechat-trades-27col-v1' ? '用户批准主金额按分、入进出出、完整平台用户ID、收款金额不符待核、余额保留未知口径；无币种列须逐次确认人民币来源证据。'
-        : '用户批准元转分、收入进支出出、付款时间、完整平台身份及其它/关闭交易待核；无币种列须逐次确认人民币来源证据。' } };
+        : '用户批准沿用账户原始金额口径，新增明确同主体余额转余额宝的划转。保留账户变动，排除经济收支。标准方向证据不足时保留待核。' } };
 }
 function approvedPolicy(formatKey, confirmedAt) {
   const policy = formatKey === 'ccb-account-32col-v1' ? {
     timeColumn: '交易日期+交易时间', accountIdentityPolicy: 'raw_bank_account', balancePolicy: 'preserve_unknown'
   } : formatKey === 'wechat-trades-27col-v1' ? {
     timeColumn: '交易时间', accountIdentityPolicy: 'raw_platform_user_id', receiverAmountPolicy: 'mismatch_pending', balancePolicy: 'preserve_unknown'
-  } : { timeColumn: '付款时间', accountIdentityPolicy: 'raw_platform_info', businessStatusPolicy: 'exact_v1' };
+  } : { timeColumn: '付款时间', accountIdentityPolicy: 'raw_platform_info', businessStatusPolicy: 'exact_v2' };
   return { ...policy,
     review: { status: 'approved', by: '本机操作人', at: confirmedAt,
       reason: formatKey === 'ccb-account-32col-v1'
@@ -67,13 +70,17 @@ class DesktopData {
         s.data_rows AS observedRows,s.coverage_complete AS coverageComplete,s.current_batch_id AS currentBatchId,
         b.status AS batchStatus,b.imported_rows AS importedRows,b.pending_rows AS pendingRows,
         b.unquantifiable_rows AS unquantifiableRows,b.parser_version AS parserVersion,b.finished_at AS importedAt,
+        rule.rule_version AS ruleVersion,
+        (s.format_observed='alipay-account-17col-v1' AND b.archive_entry_id IS NOT NULL AND rule.rule_version=1) AS canReimport,
         latest.id AS latestBatchId,latest.status AS latestBatchStatus,latest.error_code AS latestErrorCode,
         (s.status='failed' AND s.current_batch_id IS NULL AND latest.status='failed' AND latest.archive_entry_id IS NOT NULL) AS canRetry,
         (SELECT count(*) FROM fund_flow f WHERE f.case_id=s.case_id AND f.source_file_id=s.id AND f.batch_id=b.id
           AND CASE WHEN json_valid(f.raw_record) THEN coalesce(json_array_length(f.raw_record,'$.derivation.supplementary_diagnostics'),0)>0 ELSE 0 END) AS diagnosticRows
         FROM source_file s LEFT JOIN import_batch b ON b.id=s.current_batch_id AND b.source_file_id=s.id AND b.status='done'
+        LEFT JOIN format_rule rule ON rule.id=s.format_rule_id
         LEFT JOIN import_batch latest ON latest.id=(SELECT max(id) FROM import_batch WHERE source_file_id=s.id)
-        WHERE s.case_id=1 ORDER BY s.id`).safeIntegers().all().map(row => ({ ...wire(row), canRetry: row.canRetry === 1n }));
+        WHERE s.case_id=1 ORDER BY s.id`).safeIntegers().all().map(row => ({ ...wire(row), canRetry: row.canRetry === 1n,
+          canReimport: row.canReimport === 1n }));
       return { caseId, dataVersion: state.data_version.toString(), materials };
     });
   }
@@ -107,6 +114,16 @@ class DesktopData {
     }
     const { retryFailedImport } = require('./import-service.cjs');
     const receipt = await retryFailedImport({ ...context, sourceFileId, onProgress: event => this.onProgress(event) });
+    return { receipt, materials: this.listMaterials(caseId), case: this.store._dto(context.record, context.db) };
+  }
+  async reimportMaterial(caseId, sourceFileId, expectedBatchId) {
+    const context = this.context(caseId);
+    if (![sourceFileId, expectedBatchId].every(value => typeof value === 'string' && /^[1-9]\d{0,18}(?![\s\S])/u.test(value))) {
+      fail('FS_IMPORT_INPUT', '请选择当前批次的支付宝账户材料。');
+    }
+    const { reimportApprovedSource } = require('./import-service.cjs');
+    const receipt = await reimportApprovedSource({ ...context, sourceFileId, expectedBatchId, rule: approvedRule(ALIPAY),
+      onProgress: event => this.onProgress(event) });
     return { receipt, materials: this.listMaterials(caseId), case: this.store._dto(context.record, context.db) };
   }
   getWorkpaperContext(caseId) {

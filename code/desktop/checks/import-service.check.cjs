@@ -5,7 +5,7 @@ const fs=require('node:fs');
 const os=require('node:os');
 const path=require('node:path');
 const {WorkspaceStore}=require('../storage.cjs');
-const {importAlipayAccount,retryFailedImport,readFlowSource,recoverInterruptedImports,PARSER_VERSION}=require('../import-service.cjs');
+const {importAlipayAccount,retryFailedImport,reimportApprovedSource,readFlowSource,recoverInterruptedImports,PARSER_VERSION}=require('../import-service.cjs');
 const {ArchiveStore}=require('../archive-store.cjs');
 const {HEADERS,FORMAT_KEY}=require('../alipay-account.cjs');
 const {queryFlowPage}=require('../flow-query.cjs');
@@ -27,6 +27,14 @@ function values(extra={}) {
 function bytes(rows=[values()],headers=HEADERS) {
   const csv=[headers,...rows].map(row=>row.map(value=>/[",\r\n]/.test(value)?'"'+value.replaceAll('"','""')+'"':value).join(',')).join('\r\n')+'\r\n';
   return Buffer.concat([Buffer.from([0xef,0xbb,0xbf]),Buffer.from(csv)]);
+}
+function internalTransfer() {
+  const owner='\t0000000000000001(合成身份)';
+  return values({6:'即时到账交易',7:owner,8:owner,9:'\t余额宝-自动转入',10:'20.10',11:'其它',
+    12:'交换产品-余额实时转余额宝成功',13:'余额'});
+}
+function ruleV2() {
+  return rule({rule_version:2,business_status_policy:'exact_v2'});
 }
 async function fixture(t,rows=[values()]) {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'fundsift-import-')),store=new WorkspaceStore({schemaPath});
@@ -150,6 +158,86 @@ test('规则版本冲突拒绝复写；新版本重新导入仍保持旧配置�
   assert.equal(JSON.parse(f.db.prepare('SELECT notes FROM import_batch WHERE id=?').get(first.batchId).notes).policy.review.status,'approved');
 });
 
+test('主动重导复用已核验原件和原币种批准，版本过期拒绝，成功后保留旧批次与逐行原文',async t=>{
+  const f=await fixture(t,[internalTransfer(),values({0:'second'})]);
+  const first=await importAlipayAccount(f.options);
+  const request={...f.options,sourceFileId:String(first.sourceFileId),expectedBatchId:String(first.batchId),rule:ruleV2()};
+  const before=f.db.prepare('SELECT * FROM import_batch WHERE id=?').get(first.batchId);
+  const oldRow=f.db.prepare("SELECT * FROM fund_flow WHERE batch_id=? AND source_loc='2'").get(first.batchId);
+  const journals=fs.readdirSync(path.join(f.caseDirectory,'archive/.journal'));
+  assert.equal(JSON.parse(oldRow.raw_record).derivation.internal_transfer,undefined);
+  assert.equal(first.pendingRows,1);
+  fs.unlinkSync(f.filePath);
+  await assert.rejects(()=>reimportApprovedSource({...request,expectedBatchId:'99'}),{code:'FS_IMPORT_REIMPORT_STATE'});
+  await assert.rejects(()=>reimportApprovedSource({...request,rule:rule({rule_version:2})}),{code:'FS_IMPORT_REIMPORT_RULE'});
+  await assert.rejects(()=>reimportApprovedSource({...request,rule:{...ruleV2(),balance_same_direction:false}}),{code:'FS_IMPORT_REIMPORT_RULE'});
+  assert.equal(f.db.prepare('SELECT count(*) n FROM import_batch').get().n,1);
+
+  const second=await reimportApprovedSource(request);
+  const active=f.db.prepare('SELECT * FROM import_batch WHERE id=?').get(second.batchId);
+  const oldNotes=JSON.parse(before.notes),newNotes=JSON.parse(active.notes);
+  assert.equal(second.previousBatchId,first.batchId);
+  assert.equal(second.ruleVersion,2);
+  assert.equal(second.importedRows,2);
+  assert.equal(second.pendingRows,1);
+  assert.equal(active.archive_entry_id,before.archive_entry_id);
+  assert.equal(newNotes.previousBatchId,first.batchId);
+  assert.equal(newNotes.policy.businessStatusPolicy,'exact_v2');
+  assert.deepEqual(newNotes.policy.review,oldNotes.policy.review);
+  assert.deepEqual(f.db.prepare('SELECT * FROM import_batch WHERE id=?').get(first.batchId),before);
+  assert.deepEqual(fs.readdirSync(path.join(f.caseDirectory,'archive/.journal')),journals);
+  assert.equal(f.db.prepare('SELECT count(*) n FROM archive_entry').get().n,1);
+  const page=queryFlowPage(f.db,{caseId:f.record.id});
+  assert.equal(page.total,'2');
+  const row=page.rows.find(item=>item.source_loc==='2');
+  const raw=JSON.parse(row.raw_record);
+  assert.deepEqual(raw.values,JSON.parse(oldRow.raw_record).values);
+  assert.equal(row.rule_version,'2');
+  assert.equal(row.amount,null);
+  assert.equal(row.direction,null);
+  assert.deepEqual(row.pendingReasons.map(reason=>reason.reason_code),['direction_unknown']);
+  assert.equal(raw.derivation.internal_transfer.amount_minor,'2010');
+  assert.equal(raw.derivation.internal_transfer.economic_inclusion,false);
+  assert.equal(raw.derivation.internal_transfer.account_change,true);
+  await assert.rejects(()=>reimportApprovedSource(request),{code:'FS_IMPORT_REIMPORT_STATE'});
+  await assert.rejects(()=>reimportApprovedSource({...request,expectedBatchId:String(second.batchId)}),{code:'FS_IMPORT_REIMPORT_STATE'});
+  assert.equal(f.db.prepare('SELECT count(*) n FROM import_batch').get().n,2);
+});
+
+test('主动重导分块取消和归档损坏都保留旧版当前结果，允许重试使用同一旧版',async t=>{
+  const f=await fixture(t,[internalTransfer(),...Array.from({length:250},(_,i)=>values({0:String(i)}))]);
+  const first=await importAlipayAccount(f.options);
+  const request={...f.options,sourceFileId:String(first.sourceFileId),expectedBatchId:String(first.batchId),rule:ruleV2()};
+  const originalSource=f.db.prepare('SELECT * FROM source_file').get();
+  const controller=new AbortController();
+  await assert.rejects(()=>reimportApprovedSource({...request,signal:controller.signal,
+    onProgress:event=>{if(event.phase==='importing'&&event.writtenRows===250)controller.abort();}}),{code:'FS_USER_CANCELLED'});
+  assert.deepEqual(f.db.prepare('SELECT * FROM source_file').get(),originalSource);
+  assert.deepEqual(f.db.prepare('SELECT status,imported_rows FROM import_batch WHERE id=2').get(),{status:'failed',imported_rows:250});
+  const file=path.join(f.caseDirectory,f.db.prepare('SELECT final_relative_path FROM archive_entry').get().final_relative_path);
+  const original=fs.readFileSync(file);
+  const damaged=Buffer.from(original);
+  damaged[damaged.length-5]^=1;
+  fs.writeFileSync(file,damaged);
+  await assert.rejects(()=>reimportApprovedSource(request),{code:'FS_FORMAT_IDENTITY'});
+  assert.deepEqual(f.db.prepare('SELECT * FROM source_file').get(),originalSource);
+  assert.equal(queryFlowPage(f.db,{caseId:f.record.id}).total,'251');
+  fs.writeFileSync(file,original);
+  const succeeded=await reimportApprovedSource(request);
+  assert.equal(succeeded.importedRows,251);
+  assert.equal(f.db.prepare('SELECT current_batch_id FROM source_file').get().current_batch_id,succeeded.batchId);
+});
+
+test('内部划转政策必须与冻结规则绑定，拒绝旧版本开启 v2 或新版本改用 v1',async t=>{
+  const f=await fixture(t,[internalTransfer()]);
+  await assert.rejects(()=>importAlipayAccount({...f.options,policy:policy({businessStatusPolicy:'exact_v2'})}),{code:'FS_IMPORT_APPROVAL'});
+  await assert.rejects(()=>importAlipayAccount({...f.options,rule:ruleV2()}),{code:'FS_IMPORT_APPROVAL'});
+  await assert.rejects(()=>importAlipayAccount({...f.options,rule:rule({business_status_policy:'exact_v2'}),
+    policy:policy({businessStatusPolicy:'exact_v2'})}),{code:'FS_IMPORT_RULE'});
+  assert.equal(f.db.prepare('SELECT count(*) n FROM import_batch').get().n,0);
+  assert.equal(f.db.prepare('SELECT count(*) n FROM format_rule').get().n,0);
+});
+
 test('归档被改后回源拒绝；解析后归档变化也在发布前复验挡下',async t=>{
   const f=await fixture(t,Array.from({length:251},(_,i)=>values({0:String(i)})));
   await assert.rejects(()=>importAlipayAccount({...f.options,onProgress:event=>{
@@ -260,12 +348,12 @@ test('打开案件只清超期且无引用的有效暂存，保留失效日志�
   assert.deepEqual((await f.store.openCase(f.record.id)).stagingCleanup,{removed:0,warnings:1});
 });
 
-test('重导新版规则中断按批次固定规则恢复250已写与0行批次，不依赖source旧规则指针',async t=>{
+test('内部划转规则 v2 重导中断按批次固定规则恢复250已写与0行批次，不依赖source旧规则指针',async t=>{
   const f=await fixture(t,Array.from({length:501},(_,i)=>values({0:String(i)})));
   const first=await importAlipayAccount(f.options);
   const {runCaseIntegrityTransaction,runCaseTransaction}=require('../hardening.cjs');
   const {registerRuleConfig,canonicalJSON}=require('../foundation.cjs');
-  const newRule=rule({rule_version:2}),{platform,format_key,rule_version,...config}=newRule;
+  const newRule=ruleV2(),{platform,format_key,rule_version,...config}=newRule;
   let registered;
   runCaseIntegrityTransaction(f.db,f.record,()=>{
     f.db.prepare(`INSERT INTO format_rule(id,platform,format_key,rule_version,amount_expr,direction_source,source_unit,unit_scale,
@@ -273,7 +361,10 @@ test('重导新版规则中断按批次固定规则恢复250已写与0行批次�
     registered=registerRuleConfig(f.db,{rule_id:2,rule_version:2,config});
   });
   const old=f.db.prepare('SELECT * FROM import_batch WHERE id=?').get(first.batchId),notes=JSON.parse(old.notes);
-  Object.assign(notes,{rule_id:2,rule_version:2,config_sha256:registered.config_sha256});
+  const updatedPolicy={...notes.policy,businessStatusPolicy:'exact_v2'};
+  const {createHash}=require('node:crypto');
+  Object.assign(notes,{rule_id:2,rule_version:2,config_sha256:registered.config_sha256,previousBatchId:first.batchId,
+    policy:updatedPolicy,policy_sha256:createHash('sha256').update(canonicalJSON(updatedPolicy)).digest('hex')});
   runCaseTransaction(f.db,f.record,{sourceFileIds:[first.sourceFileId]},()=>{
     for(const batch of [2,3])f.db.prepare(`INSERT INTO import_batch(id,case_id,source_file_id,started_at,parser_version,status,
       archive_entry_id,notes,total_rows) VALUES(?,1,?,'t',?,'importing',?,?,501)`).run(batch,first.sourceFileId,PARSER_VERSION,old.archive_entry_id,canonicalJSON(notes));

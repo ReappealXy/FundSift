@@ -6,12 +6,12 @@ const { randomUUID } = require('node:crypto');
 const { finished } = require('node:stream/promises');
 const Excel = require('exceljs');
 const { EFFECTIVE_FLOW_FROM, withCaseReadSnapshot } = require('./hardening.cjs');
-const { parseMinor } = require('./money.cjs');
+const { parseMinor, assertInt64 } = require('./money.cjs');
 
 const MAX_DATA_ROWS = 1048575;
 const MAX_CELL_LENGTH = 32767;
 const EXACT_EXCEL_MINOR_LIMIT = 999999999999999n;
-const WORKPAPER_FORMAT_VERSION = 2;
+const WORKPAPER_FORMAT_VERSION = 3;
 const ALIPAY = 'alipay-account-17col-v1';
 const WECHAT = 'wechat-trades-27col-v1';
 const CCB = 'ccb-account-32col-v1';
@@ -40,13 +40,17 @@ const COLUMNS = [
   ['业务状态（原文）', 30, text], ['业务状态（规则归一）', 25, text],
   ['原件收付记载', 25, text], ['原件记载说明', 47, text],
   ['证据状态（规则）', 19, text], ['全部待核原因码', 45, text], ['待核原因说明', 64, text],
-  ['是否计入收付（派生，仅供参考）', 30, text], ['换算说明', 67, text]
+  ['是否计入收付（派生，仅供参考）', 30, text], ['换算说明', 67, text],
+  ['内部划转方向', 22, text], ['内部划转金额（元，绝对值）', 30, '#,##0.00'],
+  ['账户变动留痕', 18, text], ['是否计入经济收支', 23, text]
 ];
 const columnNumber = label => COLUMNS.findIndex(([column]) => column === label) + 1;
 const firstEvidenceColumn = columnNumber('本方账号／平台标识');
 const firstStatusColumn = columnNumber('业务状态（原文）');
 const amountColumn = columnNumber('标准金额（元）');
+const transferAmountColumn = columnNumber('内部划转金额（元，绝对值）');
 const recordNoteColumn = columnNumber('原件记载说明');
+const recordStatusColumn = columnNumber('原件收付记载');
 const reasonCodeColumn = columnNumber('全部待核原因码');
 const reasonDetailColumn = columnNumber('待核原因说明');
 const RECORD = {
@@ -54,7 +58,7 @@ const RECORD = {
 };
 
 const FIELD_SOURCES = [
-  ['摘要', '摘要', '交易用途类型', '消费名称', '原件对交易用途或消费对象的描述。'],
+  ['摘要', '摘要', '交易用途类型', '消费名称', '原件的交易用途或消费对象。支付宝的“消费名称”也可能填写交易说明，例如转账。'],
   ['交易类型', '留空', '交易业务类型', '留空', '当前版本只展示微信的交易业务类型。'],
   ['本方名称', '客户名称', '用户侧账号名称', '留空', '本方名称原值。支付宝本方信息放在身份列。'],
   ['对方名称', '对方户名', '对手侧账户名称', '留空', '对方名称原值。支付宝对方信息放在身份列。'],
@@ -177,10 +181,29 @@ function position(row) {
   return [null, logical?.[1] ?? null];
 }
 
-function businessStatus(rawStatus, raw, reasons) {
-  if (raw?.derivation?.business_status_policy === 'not_available') return '原件无业务状态字段';
+function internalTransfer(row, raw) {
+  const transfer = raw?.derivation?.internal_transfer;
+  if (transfer == null) return null;
+  if (row.format_key !== ALIPAY || row.rule_version !== 2n ||
+      raw.derivation.business_status_policy !== 'exact_v2' ||
+      transfer.kind !== 'balance_to_yuebao' || transfer.account_change !== true || transfer.economic_inclusion !== false) {
+    fail('FS_EXPORT_EVIDENCE', '内部划转依据与规则版本不一致，请核对材料后重试。');
+  }
+  const minor = transfer.amount_minor;
+  if (minor === null) return { amount: null };
+  if (typeof minor !== 'string' || !/^[1-9]\d{0,18}(?![\s\S])/u.test(minor)) {
+    fail('FS_EXPORT_EVIDENCE', '内部划转金额的保存格式无效，请核对材料后重试。');
+  }
+  try { return { amount: assertInt64(minor) }; }
+  catch (_) { fail('FS_EXPORT_EVIDENCE', '内部划转金额超过可核验的范围，请核对材料后重试。'); }
+}
+
+function businessStatus(rawStatus, raw, reasons, transfer) {
+  if (transfer) return '内部划转';
+  const policy = raw?.derivation?.business_status_policy;
+  if (policy === 'not_available') return '原件无业务状态字段';
   if (!populatedText(rawStatus)) return '原件未填业务状态';
-  if (raw?.derivation?.business_status_policy !== 'exact_v1') return '未获准词表（见原文）';
+  if (policy !== 'exact_v1' && policy !== 'exact_v2') return '未获准词表（见原文）';
   if (reasons.some(reason => reason.reason_code === 'business_status_closed')) return '关闭／未完成';
   if (!reasons.some(reason => reason.reason_code.startsWith('business_status_'))) return '成功';
   return '未获准词表（见原文）';
@@ -193,10 +216,11 @@ function originalRecordStatus(row, rawStatus, business) {
   return populatedText(row.raw_amount_text) ? RECORD.present : RECORD.insufficient;
 }
 
-function originalRecordNote(row, rawStatus, label, reasons) {
+function originalRecordNote(row, rawStatus, label, reasons, transfer) {
   if (row.status !== 'pending') return null;
   const hasReason = code => reasons.some(reason => reason.reason_code === code);
   if (label === RECORD.closed) return '原件的交易状态标为关闭或未完成。';
+  if (transfer) return '同一主体的余额转入余额宝，保留账户变动并从经济收支中排除。标准方向及其余待核项见待核原因。';
   if (hasReason('receiver_amount_mismatch')) return '微信原件的交易金额与对手方接收金额有差异，两个原值均保留。';
   if (row.format_key === CCB && hasReason('sign_semantics_undefined')) {
     return '建行原件记载负额，金额和方向仍待核，参见摘要与借贷方向。';
@@ -208,8 +232,8 @@ function originalRecordNote(row, rawStatus, label, reasons) {
   return '原件有金额记载，请查看全部待核原因及说明。';
 }
 
-function inclusionStatus(row, business) {
-  if (business === '关闭／未完成') return '否';
+function inclusionStatus(row, business, transfer) {
+  if (transfer || business === '关闭／未完成') return '否';
   if (row.status !== 'confirmed' || row.currency !== 'CNY' ||
       ['legacy_unverified', 'unknown'].includes(row.currency_evidence) ||
       row.amount === null || !['进', '出'].includes(row.direction)) {
@@ -253,7 +277,8 @@ function rowValues(row, record, reasons) {
   const [account, peer, ownCard, peerCard, receiver, rawStatus] = rawEvidence(row, raw);
   const [ownName, peerName] = accountNames(row, raw);
   const [worksheet, rowNumber] = position(row);
-  const status = businessStatus(rawStatus, raw, reasons);
+  const transfer = internalTransfer(row, raw);
+  const status = businessStatus(rawStatus, raw, reasons, transfer);
   const originalStatus = originalRecordStatus(row, rawStatus, status);
   const money = raw?.derivation?.money;
   const unit = ['元', '分'].includes(money?.source_unit) ? money.source_unit : '未知';
@@ -265,11 +290,13 @@ function rowValues(row, record, reasons) {
     row.raw_amount_text, unit, receiver, excelAmount(row.amount), row.raw_direction, row.direction,
     row.txn_time_text, row.txn_time, row.raw_balance_text, row.raw_currency_text, row.currency,
     CURRENCY_EVIDENCE[row.currency_evidence] ?? '依据未记录',
-    rawStatus, status, originalStatus, originalRecordNote(row, rawStatus, originalStatus, reasons),
+    rawStatus, status, originalStatus, originalRecordNote(row, rawStatus, originalStatus, reasons, transfer),
     row.status === 'confirmed' ? '已确认' : '待核',
     reasons.map(reason => reason.reason_code).join('\n') || null,
     reasons.map(reason => reason.reason_code + (reason.detail ? ' · ' + reason.detail : '')).join('\n') || null,
-    inclusionStatus(row, status), moneyExplanation(row, money)
+    inclusionStatus(row, status, transfer), moneyExplanation(row, money),
+    transfer ? '余额转余额宝' : null, transfer ? excelAmount(transfer.amount) : null,
+    transfer ? '是' : null, transfer ? '否' : null
   ];
   return cells.map(value => typeof value === 'number' ? value : excelText(value));
 }
@@ -307,6 +334,7 @@ function readWorkpaper(db, record, expectedDataVersion) {
       ) flow LEFT JOIN format_rule r ON r.id=flow.format_rule_id AND r.rule_version=flow.rule_version
       ORDER BY (flow.txn_time IS NULL),flow.txn_time,flow.source_file_id,flow.source_loc COLLATE BINARY,flow.id`).safeIntegers();
     const counts = newCounts(), platforms = new Map(), reasonSummary = new Map(), rows = [];
+    const recordCounts = new Map(Object.values(RECORD).map(label => [label, 0]));
     let hasEscapedText = false;
     for (const row of readRows.iterate()) {
       const reasons = readReasons.all(row.id);
@@ -321,11 +349,13 @@ function readWorkpaper(db, record, expectedDataVersion) {
       countRow(platforms.get(name), row);
       countRow(counts, row);
       const values = rowValues(row, record, reasons);
+      const label = values[recordStatusColumn - 1];
+      recordCounts.set(label, recordCounts.get(label) + 1);
       hasEscapedText ||= values.some(value => typeof value === 'string' && value.startsWith(TEXT_ESCAPE_PREFIX));
       rows.push(values);
     }
     if (rows.length !== totalRows) fail('FS_EXPORT_READ', '底稿行数与有效流水不一致，未生成文件。');
-    return { rows, materials, counts, dataVersion, connectionVersion, hasEscapedText,
+    return { rows, materials, counts, recordCounts, dataVersion, connectionVersion, hasEscapedText,
       platforms: [...platforms.values()].sort((a, b) => a.platform.localeCompare(b.platform, 'zh-CN')),
       reasons: [...reasonSummary.values()].sort((a, b) => a.code.localeCompare(b.code)) };
   });
@@ -366,15 +396,20 @@ function summarySheet(workbook, record, snapshot, exportedAt) {
   add(['导出时间（UTC）', exportedAt]);
   add(['有效流水口径', '仅收录每份材料当前已完成批次内的记录。保留各来源记录与待核原因。'], 33);
   add(['金额与标识', '原始金额保留文本，单位见相邻列。标准金额以元显示两位小数，未知留空。超出精确范围的金额、账号及银行卡号存为文本。'], 48);
-  add(['支付宝身份原文', '支付宝本方和对方身份列保留原始字符，部分数值含前导制表符。复制到其他系统检索时可在副本中移除前导制表符。'], 48);
+  add(['支付宝字段原文', '支付宝的本方标识、对方标识和摘要列可能含前导制表符。做精确筛选或匹配时，可在核对副本中去掉前导制表符。'], 48);
   add(['原件收付记载', '先看原件是否标为关闭或未完成，否则根据原文金额是否填写显示固定标签。标签表示原件记载情况，结算结果仍需另行核实。'], 48);
-  add(['派生列', '“是否计入收付”仅供参考。已确认且有核实币种依据的非零人民币收付为“是”，明确关闭或无金额变化为“否”，其余为“未知”。本表仅提供笔数。'], 54);
+  add(['派生列', '“是否计入收付”仅供参考。已确认且有核实币种依据的非零人民币收付为“是”，内部划转、明确关闭或无金额变化为“否”，其余为“未知”。本表仅提供笔数。'], 56);
+  add(['支付宝内部划转', '规则识别的同主体划转在账户变动中留痕，并排除经济收支。内部划转金额为原件能核实的绝对值。标准收付方向或金额仍待核时，保留原待核项。'], 56);
+  add(['内部划转列', '“内部划转方向”记录余额与余额宝之间的路径。“账户变动留痕”和“是否计入经济收支”只在识别出的划转行填写。留痕只表明原件记载的账户间变动。'], 56);
   add(['原件文件名', '本版本材料名称采用登记的原件文件名。来源以文件 SHA256 和原文坐标为准。'], 33);
   add([]);
   styleHeader(sheet.addRow(['记录统计', '总行数', '已确认', '待核', '金额未知']));
   const countCells = item => [item.totalRows, item.confirmedRows, item.pendingRows, item.unknownAmountRows];
   add(['全案', ...countCells(snapshot.counts)]);
   for (const item of snapshot.platforms) add([item.platform, ...countCells(item)]);
+  add([]);
+  styleHeader(sheet.addRow(['原件收付记载标签', '本次导出行数']));
+  for (const [label, count] of snapshot.recordCounts) add([label, count]);
   add([]);
   styleHeader(sheet.addRow(['待核原因码', '含义', '出现次数']));
   for (const item of snapshot.reasons) add([item.code, item.detail, item.count], 33);
@@ -413,7 +448,9 @@ async function writeWorkbook(stream, record, snapshot, time, onProgress) {
     const values = snapshot.rows[index];
     const row = sheet.addRow(values);
     row.height = 18;
-    if (typeof values[amountColumn - 1] === 'string') row.getCell(amountColumn).numFmt = text;
+    for (const column of [amountColumn, transferAmountColumn]) {
+      if (typeof values[column - 1] === 'string') row.getCell(column).numFmt = text;
+    }
     row.getCell(recordNoteColumn).alignment = { wrapText: true, vertical: 'middle' };
     row.getCell(reasonCodeColumn).alignment = { wrapText: true, vertical: 'middle' };
     row.getCell(reasonDetailColumn).alignment = { wrapText: true, vertical: 'middle' };

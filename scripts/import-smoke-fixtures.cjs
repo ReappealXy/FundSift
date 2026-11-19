@@ -48,4 +48,26 @@ function createFailedImportFixture(directory) {
   fs.writeFileSync(filePath, '\ufeff' + HEADERS.join(',') + '\r\n缺列,结构错误\r\n');
   return { formatKey: 'alipay-account-17col-v1', filePath };
 }
+async function seedRuleOneForReimport(workspace, directory) {
+  const { WorkspaceStore } = require('../code/desktop/storage.cjs');
+  const { importAlipayAccount } = require('../code/desktop/import-service.cjs');
+  const { FORMAT_KEY, HEADERS } = require('../code/desktop/alipay-account.cjs');
+  const filePath = path.join(directory, '旧版规则合成支付宝.csv');
+  const values = ['transfer','order','2026-02-28 12:34:55','2026-02-28 12:34:56','','source','即时到账交易',
+    '00001(合成用户)','00001(合成用户)','余额宝-自动转入','4.28','其它','交换产品-余额实时转余额宝成功','余额','','',''];
+  fs.writeFileSync(filePath, '\ufeff' + HEADERS.join(',') + '\r\n' + values.join(',') + '\r\n');
+  const store = new WorkspaceStore({ schemaPath: path.join(__dirname, '../code/ddl_extract_check.sql') });
+  const review = { status: 'approved', by: '合成测试', at: '2026-11-19', reason: '合成文件人民币来源' };
+  try {
+    const state = await store.openWorkspace(workspace, { allowCreate: false });
+    const second = state.cases.find(item => item.number === 'M0-SMOKE-002');
+    await store.openCase(second.id);
+    await importAlipayAccount({ db: store.caseDb, record: store._caseRecord(second.id), caseDirectory: store._casePath(second.id), filePath,
+      rule: { ...rule(), platform: '支付宝', format_key: FORMAT_KEY, direction_map: { 收入:'进', 支出:'出' },
+        currency_policy: 'verified_cny', currency_map: {}, balance_scope: 'unknown', balance_same_direction: true, review, reversal_note:'负额待核' },
+      policy: { timeColumn:'付款时间', accountIdentityPolicy:'raw_platform_info', businessStatusPolicy:'exact_v1', review } });
+    fs.unlinkSync(filePath);
+  } finally { store.close(); }
+}
+if (require.main === module) seedRuleOneForReimport(...process.argv.slice(2)).catch(error => { console.error(error); process.exitCode = 1; });
 module.exports={createImportFixtures,createFailedImportFixture};

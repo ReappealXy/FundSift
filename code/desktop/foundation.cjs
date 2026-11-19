@@ -25,6 +25,7 @@ const RULE_CONFIG_SCHEMA = {
       pattern: '^\\S(?:[\\s\\S]*\\S)?(?![\\s\\S])', not: { pattern: '^[A-Za-z]{3}$' } },
       additionalProperties: { type: 'string', pattern: '^[A-Z]{3}(?![\\s\\S])' } },
     reversal_note: text,
+    business_status_policy: { const: 'exact_v2' },
     review: { type: 'object', additionalProperties: false, required: ['status','by','at','reason'], properties: {
       status: choices(['unreviewed','approved']), by: { anyOf: [text,{ type: 'null' }] },
       at: { anyOf: [text,{ type: 'null' }] }, reason: { anyOf: [text,{ type: 'null' }] }

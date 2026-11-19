@@ -169,13 +169,28 @@
     const diagnostics=material.diagnosticRows==null?'':`<div class="cell-note">附加诊断涉及 ${esc(material.diagnosticRows)} 条</div>`;
     const attrs=`data-id="${esc(material.id)}" ${disabled}`;
     let action='';
-    if(material.currentBatchId)action=btn('查看流水','material-flows','table','small',attrs);
+    if(material.currentBatchId){
+      action=btn('查看流水','material-flows','table','small',attrs);
+      if(material.canReimport&&typeof desktopBridge.reimportMaterial==='function'){
+        action+=` <span class="material-reimport">${btn('按新规则重导','desktop-reimport-material','refresh','small',`${attrs} data-batch="${esc(material.currentBatchId)}"`)}</span>`;
+      }
+    }
     else if(material.canRetry&&typeof desktopBridge.retryImport==='function')action=btn('重试导入','desktop-retry-import','refresh','small',attrs);
-    return `<tr><td><div class="cell-title">${title}</div><div class="cell-note num" title="${esc(material.sha256)}">SHA256 ${esc(material.sha256?.slice(0,16)||'—')}…</div></td><td title="${esc(formatHint)}">${format}<div class="cell-note">${esc(material.encoding||'—')}</div></td><td>${esc(material.batchStatus||material.status)}<div class="cell-note">${latestError}</div></td><td class="num">${counts}${diagnostics}</td><td>${action}</td></tr>`;
+    const rule=material.ruleVersion?` · 规则 v${esc(material.ruleVersion)}`:'';
+    return `<tr><td><div class="cell-title">${title}</div><div class="cell-note num" title="${esc(material.sha256)}">SHA256 ${esc(material.sha256?.slice(0,16)||'—')}…</div></td><td title="${esc(formatHint)}">${format}<div class="cell-note">${esc(material.encoding||'—')}${rule}</div></td><td>${esc(material.batchStatus||material.status)}<div class="cell-note">${latestError}</div></td><td class="num">${counts}${diagnostics}</td><td>${action}</td></tr>`;
+  }
+  function internalTransfer(row){
+    if(row.rule_version!=='2'&&row.rule_version!==2)return null;
+    try {
+      const raw=JSON.parse(row.raw_record);
+      return raw?.format_key==='alipay-account-17col-v1'&&raw.derivation?.internal_transfer?.kind==='balance_to_yuebao'
+        ? raw.derivation.internal_transfer : null;
+    } catch (_) { return null; }
   }
   function ledgerRow(row, disabled){
     const reasons=row.pendingReasons.map(reason=>reason.detail).join('；');
-    return `<tr><td class="num">${esc(row.txn_time||'时间待核')}<div class="cell-note">${esc(readable(row.source_file_name))} · ${esc(row.source_loc)}</div>${btn('查看原文','desktop-source','external','small ledger-source-button',`data-id="${esc(row.id)}" ${disabled}`)}</td><td>${status(row.status)}<div class="cell-note" title="${esc(reasons)}">${esc(reasons)}</div></td><td><div class="cell-title">${esc(readable(row.acct_no||'身份待核'))}</div><div class="cell-note">${esc(readable(row.peer_name||row.peer_acct||row.summary||'—'))}</div></td><td class="num">${esc(readable(row.raw_amount_text??'（空）'))} ${esc(rawUnit(row))}<div class="cell-note">${esc(row.raw_direction||'未知方向')}</div></td><td class="num">${exactMoney(row.amount)}<div class="cell-note">${esc(row.currency||'币种未覆盖，不计算')}</div></td></tr>`;
+    const classification=internalTransfer(row)?'<div class="cell-note">内部划转 · 不计入经济收支</div>':'';
+    return `<tr><td class="num">${esc(row.txn_time||'时间待核')}<div class="cell-note">${esc(readable(row.source_file_name))} · ${esc(row.source_loc)}</div>${btn('查看原文','desktop-source','external','small ledger-source-button',`data-id="${esc(row.id)}" ${disabled}`)}</td><td>${status(row.status)}${classification}<div class="cell-note" title="${esc(reasons)}">${esc(reasons)}</div></td><td><div class="cell-title">${esc(readable(row.acct_no||'身份待核'))}</div><div class="cell-note">${esc(readable(row.peer_name||row.peer_acct||row.summary||'—'))}</div></td><td class="num">${esc(readable(row.raw_amount_text??'（空）'))} ${esc(rawUnit(row))}<div class="cell-note">${esc(row.raw_direction||'未知方向')}</div></td><td class="num">${exactMoney(row.amount)}<div class="cell-note">${esc(row.currency||'币种未覆盖，不计算')}</div></td></tr>`;
   }
   function desktopDataPage(){
     const disabled=desktop.busy||live.loading?'disabled':'';
@@ -203,14 +218,17 @@
     }catch(error){if(epoch===live.epoch){live.error=desktopError(error);live.page=null;}}
     finally{if(epoch===live.epoch){live.loading=false;render();}}
   }
-  async function desktopImport(sourceFileId){
+  async function desktopImport(sourceFileId,batchId){
     if(desktop.busy||live.loading||!currentCase())return;
-    const retry=sourceFileId!==undefined;
+    const reimport=batchId!==undefined;
+    const retry=sourceFileId!==undefined&&!reimport;
     if(retry&&!live.materials.some(material=>material.id===sourceFileId&&material.canRetry&&!material.currentBatchId))return;
+    if(reimport&&!live.materials.some(material=>material.id===sourceFileId&&material.canReimport&&material.currentBatchId===batchId))return;
     const caseId=state.caseId;desktop.busy=true;live.error='';live.receipt=null;render();
     try{
-      const result=retry?await desktopCall('retryImport',caseId,sourceFileId):await desktopCall('chooseImport',caseId);
-      if(result.cancelled){toast('已取消选择，未导入材料。');return;}
+      const result=reimport?await desktopCall('reimportMaterial',caseId,sourceFileId,batchId)
+        :retry?await desktopCall('retryImport',caseId,sourceFileId):await desktopCall('chooseImport',caseId);
+      if(result.cancelled){toast(reimport?'已取消重导。':'已取消选择，未导入材料。');return;}
       live.receipt=result.receipt;live.materials=result.materials.materials;upsertDesktopCase(result.case);
       toast('导入已发布，可查看流水和待核原因。');
     }catch(error){
@@ -267,6 +285,11 @@
       parts.push(`方向依据：${direction} → ${row.direction}，${signed}。`);
     }else if(row.amount==null){
       parts.push('标准金额待核。');
+    }
+    const transfer=internalTransfer(row);
+    if(transfer){
+      const shown=transfer.amount_minor==null?'划转金额待核。':`原件划转金额 ${exactMoney(transfer.amount_minor)} 元。`;
+      parts.push(`内部划转：余额转入余额宝，保留账户变动证据，排除经济收支。${shown}`);
     }
     return `<div class="source-money-explanation">${parts.map(part=>`<p>${esc(part)}</p>`).join('')}</div>`;
   }
@@ -584,6 +607,7 @@
       'close-modal':()=>{if(canCloseModal())closeModal();},
       'global-search':globalSearch,'help':desktopHelp,
       'desktop-import':()=>desktopImport(),'desktop-retry-import':el=>desktopImport(el.dataset.id),
+      'desktop-reimport-material':el=>desktopImport(el.dataset.id,el.dataset.batch),
       'desktop-export-workpaper':desktopExport,'refresh-data':()=>loadDesktopPage(true),
       'material-flows':el=>{live.source=el.dataset.id;navigate('flows');},
       'desktop-source':el=>desktopSource(el.dataset.id),

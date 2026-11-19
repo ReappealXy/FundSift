@@ -6,7 +6,7 @@
     desktop,
     terms,
     operation: {
-      names: { 'get-state': '读取案件', 'list-cases': '刷新案件列表', 'choose-workspace': '设置数据存放位置', 'create-case': '新建案件', 'open-case': '打开案件', 'choose-import':'导入材料', 'retry-import':'重试导入', 'list-materials':'读取材料', 'query-flows':'读取流水', 'read-flow-source':'核验原文', 'query-relations':'查找关联候选', 'export-workpaper':'导出 Excel 底稿' },
+      names: { 'get-state': '读取案件', 'list-cases': '刷新案件列表', 'choose-workspace': '设置数据存放位置', 'create-case': '新建案件', 'open-case': '打开案件', 'choose-import':'导入材料', 'retry-import':'重试导入', 'reimport-material':'按新规则重导', 'list-materials':'读取材料', 'query-flows':'读取流水', 'read-flow-source':'核验原文', 'query-relations':'查找关联候选', 'export-workpaper':'导出 Excel 底稿' },
       phases: { queued: '等待前面的操作完成', running: '正在处理', 'choosing-location': '等待选择存放文件夹', 'confirming-location': '等待确认存放位置', checking: '正在检查数据', 'backing-up': '正在备份旧版数据', 'verifying-backup': '正在校验备份', upgrading: '正在升级旧版数据', 'saving-settings': '正在保存设置', 'choosing-file':'等待选择原始材料', 'confirming-import':'等待确认材料规则', archiving:'正在归档原件',parsing:'正在检查格式',importing:'正在写入流水','verifying-archive':'正在复验归档',publishing:'正在发布完整批次','reading-source':'正在核验来源原文','reading-export':'正在读取底稿数据','writing-export':'正在生成 Excel 底稿', completed: '操作完成', failed: '操作未完成' },
       elapsed: '已用时 {seconds} 秒',
       pending: '完成后会自动显示结果。',

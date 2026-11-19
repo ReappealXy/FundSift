@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('fundsiftDesktop', Object.freeze({
   openCase: id => ipcRenderer.invoke('fundsift:open-case', id),
   chooseImport: caseId => ipcRenderer.invoke('fundsift:choose-import', caseId),
   retryImport: (caseId, sourceFileId) => ipcRenderer.invoke('fundsift:retry-import', caseId, sourceFileId),
+  reimportMaterial: (caseId, sourceFileId, batchId) => ipcRenderer.invoke('fundsift:reimport-material', caseId, sourceFileId, batchId),
   exportWorkpaper: caseId => ipcRenderer.invoke('fundsift:export-workpaper', caseId),
   listMaterials: caseId => ipcRenderer.invoke('fundsift:list-materials', caseId),
   queryFlows: (caseId, options) => ipcRenderer.invoke('fundsift:query-flows', caseId, options),
@@ -21,7 +22,7 @@ contextBridge.exposeInMainWorld('fundsiftDesktop', Object.freeze({
     const phases = new Set(['queued', 'running', 'choosing-location', 'confirming-location', 'checking', 'backing-up', 'verifying-backup', 'upgrading', 'saving-settings',
       'choosing-file', 'confirming-import', 'archiving', 'parsing', 'importing', 'verifying-archive', 'publishing', 'reading-source',
       'reading-export', 'writing-export', 'completed', 'failed']);
-    const operations = new Set(['get-state', 'list-cases', 'choose-workspace', 'create-case', 'open-case', 'choose-import', 'retry-import',
+    const operations = new Set(['get-state', 'list-cases', 'choose-workspace', 'create-case', 'open-case', 'choose-import', 'retry-import', 'reimport-material',
       'list-materials', 'query-flows', 'read-flow-source', 'query-relations', 'export-workpaper']);
     const listener = (_event, value) => {
       if (!value || !Number.isSafeInteger(value.operationId) || value.operationId < 1 ||

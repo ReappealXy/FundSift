@@ -37,7 +37,7 @@ function writeAlipay(fix) {
   const { HEADERS } = require('../alipay-account.cjs');
   const row = (id, time, amount, direction, status) => [
     id, 'order', time, time, '', 'source', 'type', '\t0000000000000000001',
-    '=1+2', '商品', amount, direction, status, 'way', '', '', OMITTED_ALIPAY_FIELD
+    '=1+2', '\t商品', amount, direction, status, 'way', '', '', OMITTED_ALIPAY_FIELD
   ];
   const rows = [HEADERS,
     row('1', '2026-01-01 08:00:01', '92233720368547758.07', '收入', '交易成功'),
@@ -49,6 +49,20 @@ function writeAlipay(fix) {
   const filePath = path.join(fix.root, '合成支付宝.csv');
   fs.writeFileSync(filePath, '\ufeff' + rows.map(values => values.join(',')).join('\r\n') + '\r\n');
   return filePath;
+}
+
+function importAlipayV1(fix, filePath) {
+  const { FORMAT_KEY } = require('../alipay-account.cjs');
+  const review = { status: 'approved', by: '合成核对', at: fix.approved.confirmedAt, reason: '合成材料批准按人民币处理' };
+  return importAlipayAccount({
+    db: fix.db, record: fix.record, caseDirectory: fix.store._casePath(fix.current.id), filePath,
+    rule: { platform: '支付宝', format_key: FORMAT_KEY, rule_version: 1,
+      amount_expr: 'E', rounding_rule: 'ROUND_HALF_UP', source_unit: '元', unit_scale: 100,
+      direction_map: { 收入: '进', 支出: '出' }, negative_policy: 'pending', zero_policy: 'pending', zero_direction: null,
+      currency_policy: 'verified_cny', currency_map: {}, balance_scope: 'unknown', balance_same_direction: true,
+      reversal_note: '合成边界保守待核', review },
+    policy: { timeColumn: '付款时间', accountIdentityPolicy: 'raw_platform_info', businessStatusPolicy: 'exact_v1', review }
+  });
 }
 
 function writeWechat(fix) {
@@ -73,7 +87,7 @@ test('真实导入的底稿只取有效批次，回读原文、精确金额、�
   const fix = await fixture(t);
   const alipay = writeAlipay(fix), wechat = writeWechat(fix);
   const ccb = createImportFixtures(path.join(fix.root, 'bank-fixture')).find(item => item.formatKey === 'ccb-account-32col-v1');
-  await fix.data.importFile(fix.current.id, { ...fix.approved, filePath: alipay });
+  await importAlipayV1(fix, alipay);
   const stored = fix.db.prepare('SELECT * FROM format_rule').get();
   const config = JSON.parse(fix.db.prepare('SELECT config_json FROM format_rule_config').get().config_json);
   const policy = JSON.parse(fix.db.prepare('SELECT notes FROM import_batch WHERE id=1').get().notes).policy;
@@ -84,7 +98,7 @@ test('真实导入的底稿只取有效批次，回读原文、精确金额、�
   await fix.data.importFile(fix.current.id, { ...fix.approved, filePath: wechat, formatKey: 'wechat-trades-27col-v1' });
   await fix.data.importFile(fix.current.id, { ...ccb, confirmedCny: false, confirmedAt: fix.approved.confirmedAt });
   const context = getWorkpaperContext(fix);
-  assert.match(context.fileName, /^流水核对底稿-格式v2-数据v\d+-\d{8}T\d{9}Z\.xlsx$/);
+  assert.match(context.fileName, /^流水核对底稿-格式v3-数据v\d+-\d{8}T\d{9}Z\.xlsx$/);
   assert.equal(context.totalRows, 8);
   const filePath = path.join(fix.root, context.fileName);
   const result = await exportWorkpaper({ ...fix, filePath, expectedDataVersion: context.dataVersion });
@@ -119,7 +133,7 @@ test('真实导入的底稿只取有效批次，回读原文、精确金额、�
   assert.equal(view(max, '标准金额（元）').numFmt, '@');
   assert.equal(indexes.get('原始金额单位'), indexes.get('原始金额（原文）') + 1);
   assert.equal(view(max, '原始金额单位').value, '元');
-  assert.equal(view(max, '摘要').value, '商品');
+  assert.equal(view(max, '摘要').value, '\t商品');
   for (const label of ['交易类型', '本方名称', '对方名称', '原件记载说明']) assert.equal(view(max, label).value, null);
   const rounded = find('原始金额（原文）', '1.005');
   assert.equal(view(rounded, '标准金额（元）').value, -1.01);
@@ -138,6 +152,9 @@ test('真实导入的底稿只取有效批次，回读原文、精确金额、�
   assert.match(view(unknown, '业务状态（规则归一）').value, /未获准词表/);
   assert.equal(view(unknown, '是否计入收付（派生，仅供参考）').value, '未知');
   assert.equal(view(unknown, '全部待核原因码').value, 'business_status_unknown\ndirection_unknown');
+  for (const label of ['内部划转方向', '内部划转金额（元，绝对值）', '账户变动留痕', '是否计入经济收支']) {
+    assert.equal(view(unknown, label).value, null);
+  }
   const wx = find('平台', '微信');
   assert.equal(view(wx, '本方银行卡号（原文）').value, '0000002345678901234');
   assert.equal(view(wx, '原始金额（原文）').value, '101');
@@ -172,9 +189,15 @@ test('真实导入的底稿只取有效批次，回读原文、精确金额、�
   assert.ok(info.getColumn(2).values.some(value => typeof value === 'string' && value.includes('在 Excel 里改不算复核')));
   assert.ok(info.getColumn(1).values.includes('receiver_amount_mismatch'));
   const formatRow = info.getColumn(1).values.indexOf('底稿格式版本');
-  assert.equal(info.getRow(formatRow).getCell(2).value, 2);
+  assert.equal(info.getRow(formatRow).getCell(2).value, 3);
   assert.ok(info.getColumn(1).values.includes('字段来源表'));
-  assert.ok(info.getColumn(2).values.some(value => typeof value === 'string' && value.includes('前导制表符')));
+  assert.ok(info.getColumn(2).values.some(value => typeof value === 'string' && /本方标识、对方标识和摘要.*前导制表符/u.test(value)));
+  const counted = ['标为关闭或未完成', '有收付记载', '记载不足以判断']
+    .map(label => info.getRow(info.getColumn(1).values.indexOf(label)).getCell(2).value);
+  assert.deepEqual(counted, [1, 6, 1]);
+  const sourceRow = info.getColumn(1).values.indexOf('摘要');
+  assert.equal(info.getRow(sourceRow).getCell(4).value, '消费名称');
+  assert.match(info.getRow(sourceRow).getCell(5).value, /转账/u);
   assert.ok(info.getColumn(1).values.includes('原文转义'));
   assert.equal(flows.rowCount, 9);
   assert.ok(flows.autoFilter);
@@ -184,6 +207,53 @@ test('真实导入的底稿只取有效批次，回读原文、精确金额、�
   await assert.rejects(() => exportWorkpaper({ ...fix, filePath, expectedDataVersion: context.dataVersion }), { code: 'FS_EXPORT_EXISTS' });
   assert.deepEqual(fs.readFileSync(filePath), previous);
   assert.equal(fs.readdirSync(fix.root).some(name => name.endsWith('.tmp')), false);
+});
+
+test('规则 v2 的底稿单列可核实的内部划转金额，原始收付方向继续待核', async t => {
+  const fix = await fixture(t);
+  const { HEADERS } = require('../alipay-account.cjs');
+  const row = (no, amount, status, subject = '\t000001(合成主体)', memo = '\t余额宝-自动转入') => [
+    no, 'order', '2026-01-01 08:00:01', '2026-01-01 08:00:02', '', 'source', '即时到账交易',
+    '\t000001(合成主体)', subject, memo, amount, '其它', status, '余额', '', '', OMITTED_ALIPAY_FIELD
+  ];
+  const transfer = '交换产品-余额实时转余额宝成功';
+  const rows = [HEADERS, row('1', '30.55', transfer), row('2', '92233720368547758.07', transfer),
+    row('3', '12.00', transfer, '\t000002(合成对手)'),
+    row('4', '8.00', '交易中途关闭（未完成）')];
+  const filePath = path.join(fix.root, '合成内部划转.csv');
+  fs.writeFileSync(filePath, '\ufeff' + rows.map(values => values.join(',')).join('\r\n') + '\r\n');
+  await fix.data.importFile(fix.current.id, { ...fix.approved, filePath });
+  const context = getWorkpaperContext(fix);
+  const output = path.join(fix.root, context.fileName);
+  await exportWorkpaper({ ...fix, filePath: output, expectedDataVersion: context.dataVersion });
+  const book = await readWorkbook(output);
+  const flows = book.getWorksheet('流水明细'), info = book.getWorksheet('导出说明');
+  const labels = flows.getRow(1).values;
+  const byRecord = rowNumber => label => flows.getRow(rowNumber).getCell(labels.indexOf(label));
+  const ordinaryAmount = byRecord(2), largeAmount = byRecord(3), unrelated = byRecord(4), closed = byRecord(5);
+  const heading = '内部划转金额（元，绝对值）';
+  for (const read of [ordinaryAmount, largeAmount]) {
+    assert.equal(read('业务状态（规则归一）').value, '内部划转');
+    assert.equal(read('内部划转方向').value, '余额转余额宝');
+    assert.equal(read('账户变动留痕').value, '是');
+    assert.equal(read('是否计入经济收支').value, '否');
+    assert.equal(read('是否计入收付（派生，仅供参考）').value, '否');
+    assert.equal(read('证据状态（规则）').value, '待核');
+    assert.equal(read('标准方向').value, null);
+    assert.equal(read('标准金额（元）').value, null);
+    assert.equal(read('全部待核原因码').value, 'direction_unknown');
+    assert.match(read('原件记载说明').value, /从经济收支中排除/u);
+  }
+  assert.equal(ordinaryAmount(heading).value, 30.55);
+  assert.equal(ordinaryAmount(heading).numFmt, '#,##0.00');
+  assert.equal(largeAmount(heading).value, '92233720368547758.07');
+  assert.equal(largeAmount(heading).numFmt, '@');
+  assert.equal(unrelated('业务状态（规则归一）').value, '未获准词表（见原文）');
+  assert.equal(unrelated(heading).value, null);
+  assert.equal(unrelated('是否计入经济收支').value, null);
+  assert.equal(closed('原件收付记载').value, '标为关闭或未完成');
+  const zero = info.getColumn(1).values.indexOf('记载不足以判断');
+  assert.equal(info.getRow(zero).getCell(2).value, 0);
 });
 
 test('数据版本改变时不发布，外部写入和发布时的同名冲突也不留下半成品', async t => {

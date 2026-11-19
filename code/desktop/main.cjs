@@ -155,6 +155,21 @@ async function start() {
     requireCurrentCase(caseId);
     return worker.request('retryImport', caseId, sourceFileId);
   });
+  register('reimport-material', async (caseId, sourceFileId, batchId) => {
+    requireCurrentCase(caseId);
+    const { materials } = await worker.request('listMaterials', caseId);
+    const material = materials.find(item => item.id === sourceFileId && item.currentBatchId === batchId && item.canReimport);
+    if (!material) throw Object.assign(new Error('当前材料已变化，请刷新后重新选择。'), { code: 'FS_IMPORT_REIMPORT_STATE' });
+    activeStatus?.update('confirming-import');
+    const confirmation = smokeConfig ? { response: 0 } : await dialog.showMessageBox(window, {
+      type: 'question', title: '按支付宝账户规则 v2 重导', message: '应用新版内部划转规则？',
+      detail: `材料：${material.fileName}\n\n软件会从原件归档重导。新批次完整核对通过后才成为当前结果，旧规则和旧批次继续留档。`,
+      buttons: ['按新规则重导', '取消'], defaultId: 1, cancelId: 1, noLink: true
+    });
+    if (confirmation.response !== 0) return { cancelled: true };
+    requireCurrentCase(caseId);
+    return worker.request('reimportMaterial', caseId, sourceFileId, batchId);
+  });
   register('export-workpaper', async caseId => {
     requireCurrentCase(caseId);
     const prepared = await worker.request('getWorkpaperContext', caseId);
@@ -202,7 +217,7 @@ async function start() {
     const bank = format.key === 'ccb-account-32col-v1';
     const policy = bank ? '采用交易日期加交易时间、元转分、借记出贷记进；负额、零额和未知值保留待核。账号与卡号分开保留。原始币种“人民币元”按批准映射记为CNY，其它币种依证据处理；余额仅保留，不做余额链校验。'
       : format.key === 'wechat-trades-27col-v1' ? '采用交易时间、主金额按分、入记进出记出；主金额与收款金额不符等异常保留待核，完整平台用户ID原文保留。余额仅保留，不做余额链校验。'
-      : '采用付款时间、元转分、收入记进支出记出；其它、关闭交易和证据不明的行保留待核。本方平台身份完整保留。';
+      : '采用支付宝账户规则 v2。使用付款时间、元转分，收入记进、支出记出。证据明确的同主体余额转余额宝记录标为内部划转，保留账户变动证据，排除经济收支。无法确认的方向和关闭交易继续待核。';
     const confirmation = fixture ? {response:0} : await dialog.showMessageBox(window, { type: 'question', title: '确认本次材料与处理范围',
       message: bank ? '请确认采用本格式的保守处理规则。' : '请确认所选材料中的金额全部为人民币。',
       detail: `文件：${path.basename(choice.filePaths[0])}\n格式：${format.name}\n\n${policy}\n\n技术预览：完整G0尚未完成，待核只读，不自动合并或去重。${bank ? '币种按原文与批准映射处理，不作人民币默认推断。' : '确认即表示你已根据这份材料的来源核实币种为人民币；仅凭金额单位或列名不能确认币种。'}`,
