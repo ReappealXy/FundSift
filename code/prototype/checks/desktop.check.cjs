@@ -17,7 +17,9 @@ function bridgeState(cases=[],pathValue='D:\\SyntheticWorkspace'){
     async chooseWorkspace(){state.chooseCalls++;state.workspacePath='D:\\ChosenWorkspace';return bridge.getState();},
     async createCase(value){state.createCalls++;const c=caseRow('new-case-id',value.name,value.number);state.cases.push(c);state.currentCaseId=c.id;return success(c);},
     async openCase(id){state.openCalls.push(id);const c=state.cases.find(c=>c.id===id);if(!c||c.available===false)return failure(c?.error||'案件不存在');state.currentCaseId=id;return success(c);},
-    async listCases(){return success(state.cases);}
+    async listCases(){return success(state.cases);},
+    async listMaterials(id){return success({caseId:id,dataVersion:'0',materials:[]});},
+    async queryFlows(id){return success({caseId:id,dataVersion:'0',total:'0',rows:[],nextCursor:null});}
   };
   return {bridge,state};
 }
@@ -60,7 +62,7 @@ async function main(){
   resolveCreate();await settle();
   verify(t.$('#main h1').textContent==='材料管理'&&t.$('#main').textContent.includes('案件名称与编号已保存'),'Successful creation opens saved case');
   verify(t.$('#toast-root').textContent.includes('案件已保存'),'Success message follows backend reply');
-  verify(t.$('#main').textContent.includes('开发中')&&!t.$('[data-action="pick-files"]')&&!t.$('[data-action="demo-import"]'),'Production materials cannot simulate import');
+  verify(t.$('#main').textContent.includes('开发中')&&!t.$('[data-action="pick-files"]')&&!t.$('[data-action="demo-import"]'),'Production materials uses native import and exposes no demo actions');
   for(const route of ['flows','review','exports']){
     t.nav(route);
     verify(t.$('#main').textContent.includes('开发中')&&!t.$('.ledger-table')&&!t.$('[data-action="do-export"]'),'Unconnected '+route+' page has no synthetic results or writes');
@@ -186,6 +188,38 @@ async function main(){
   t.w.dispatchEvent(new t.w.Event('pagehide'));
   verify(unsubscribed===1&&!t.$('#desktop-operation-status'),'Page teardown unsubscribes operation events and removes feedback');
   t.close();
+  fixture=bridgeState([caseRow('imports','真实接口合成案','IMPORT-01')]);
+  const material={id:'1',fileName:'<img src=x onerror=bad()>.csv',sha256:'a'.repeat(64),formatKey:'alipay-account-17col-v1',currentBatchId:'1',batchStatus:'done',importedRows:'2',pendingRows:'1'};
+  const ledgerRow={id:'1',source_file_name:material.fileName,source_loc:'2',txn_time:'2026-01-01 08:00:00',acct_no:'00001(合成身份)',peer_name:null,peer_acct:null,summary:'测试',raw_amount_text:'92233720368547758.07',raw_direction:'收入',amount:'9223372036854775807',currency:'CNY',status:'confirmed',pendingReasons:[]};
+  let imported=false,queryOptions=[],sourceCalls=0;
+  fixture.bridge.listMaterials=async id=>success({caseId:id,dataVersion:'1',materials:imported?[material]:[]});
+  fixture.bridge.chooseImport=async id=>{imported=true;return success({receipt:{state:'completed',importedRows:2,pendingRows:1,unquantifiableRows:1},materials:{materials:[material]},case:{...fixture.state.cases[0],stats:{files:1,flows:2,pending:1}}});};
+  fixture.bridge.queryFlows=async(id,opt)=>{queryOptions.push(opt);return success({caseId:id,dataVersion:'1',total:opt.filters.status==='pending'?'1':'2',rows:opt.filters.status==='pending'?[{...ledgerRow,id:'2',amount:null,status:'pending',pendingReasons:[{reason_code:'direction_unknown',detail:'方向未知'}]}]:opt.cursor?[{...ledgerRow,id:'2',amount:'-9223372036854775808'}]:[ledgerRow],nextCursor:opt.cursor||opt.filters.status==='pending'?null:'page2'});};
+  fixture.bridge.readFlowSource=async(id,opt)=>{sourceCalls++;verify(id==='imports'&&opt.dataVersion==='1'&&opt.flowId==='1','Source request pins current case, flow and version');return success({standard:ledgerRow,fileName:material.fileName,sourceLoc:'2',sourceSha256:'a'.repeat(64),fields:{'原始文本':'<script>x</script>\u202e原文'},savedDerivation:{amount_expr:'E'}});};
+  fixture.bridge.queryRelations=async()=>success({rows:[],eligibleRows:'2',truncated:false,limitations:['不自动去重']});
+  t=setup(fixture.bridge);await settle();t.action('open-case');await settle();
+  verify(t.$('[data-action="desktop-import"]')&&!t.$('[data-action="demo-import"]'),'Connected materials exposes only real import');
+  t.action('desktop-import');await settle();
+  verify(t.$('.import-receipt').textContent.includes('写入 2 条')&&t.$('.import-receipt').textContent.includes('待核 1 条'),'Published receipt uses authoritative counts');
+  verify(t.$('.desktop-materials tbody').textContent.includes('<img')&&!t.$('.desktop-materials img'),'Untrusted material filename is escaped');
+  t.action('material-flows');await settle();
+  verify(t.$('.desktop-ledger').textContent.includes('+92,233,720,368,547,758.07'),'Signed int64 maximum renders without Number loss');
+  verify(queryOptions.at(-1).filters.sourceFileId===1,'Material drilldown scopes source server side');
+  t.action('desktop-source');await settle();
+  verify(sourceCalls===1&&t.$('.raw-evidence').textContent.includes('<script>')&&!t.$('.raw-evidence script'),'Verified source values render as text');
+  verify(t.$('.raw-evidence').textContent.includes('\\u202e'),'Bidi control rendered visibly without overwriting stored original');
+  verify(!t.$('.modal [data-action="confirm-amount"]')&&!t.$('.modal input'),'Source modal has no amount editing path');t.action('close-modal');
+  t.action('desktop-next');await settle();verify(t.$('.desktop-ledger').textContent.includes('-92,233,720,368,547,758.08'),'Int64 minimum renders exactly on next page');
+  t.action('desktop-prev');await settle();verify(queryOptions.at(-1).cursor===null,'Previous page restores original cursor context');
+  t.nav('review');await settle();verify(queryOptions.at(-1).filters.status==='pending'&&t.$('.desktop-ledger').textContent.includes('方向未知'),'Read-only review uses pending server filter and explicit reason');
+  verify(t.$('.desktop-ledger').textContent.includes('—')&&!t.$('[data-action="confirm-amount"]'),'Unknown amount stays dash and cannot be saved');
+  t.action('desktop-relations');await settle();verify(t.$('.modal').textContent.includes('不合并、不去重、不计算净额'),'Candidate relation modal discloses read-only meaning');t.action('close-modal');
+  fixture.bridge.queryFlows=async()=>({ok:false,error:{code:'FS_QUERY_STALE',message:'数据已更新，请刷新列表后继续查看。'}});
+  t.action('refresh-data');await settle();verify(t.$('.desktop-data-error').textContent.includes('数据已更新')&&t.$$('.desktop-ledger tbody tr').length===0,'Stale response clears old rows and offers refresh');
+  t.nav('materials');await settle();fixture.bridge.chooseImport=async()=>({ok:false,error:{code:'FS_IMPORT_DUPLICATE',message:'相同原件已登记',receipt:{state:'failed',importedRows:0,pendingRows:0}}});
+  t.action('desktop-import');await settle();verify(t.$('.desktop-data-error').textContent.includes('相同原件')&&t.$('.import-receipt').textContent.includes('导入未发布'),'Import failure receipt remains visible with actionable error');
+  verify(t.$$('.desktop-materials tbody tr').length===1,'Refused duplicate never adds phantom material');t.close();
+
   console.log(`PASS: ${passed} desktop renderer contract assertions (mock bridge, no worker/database acceptance)`);
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

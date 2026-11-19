@@ -18,7 +18,9 @@ function fixture({location=null,cases=[]}={}){
     chooseWorkspace:async()=>{state.chooseCalls++;state.location='D:\\SyntheticChosen';return bridge.getState();},
     createCase:async value=>{state.createCalls++;const valueRow=row('new-case',value.name,value.number);state.cases.push(valueRow);return success(valueRow);},
     openCase:async id=>success(state.cases.find(c=>c.id===id)),
-    listCases:async()=>success(state.cases)
+    listCases:async()=>success(state.cases),
+    listMaterials:async id=>success({caseId:id,dataVersion:'0',materials:[]}),
+    queryFlows:async id=>success({caseId:id,dataVersion:'0',total:'0',rows:[],nextCursor:null})
   };
   return {state,bridge};
 }
@@ -96,15 +98,15 @@ async function main(){
 
   // Source format guidance is visible without revealing preparation notes or creating an import path.
   f=fixture({location:'D:\\SyntheticMaterials',cases:[row()]});t=setup(f.bridge);await tick();t.w.FUND_INTRO.enter();t.action('open-case');await tick();
-  verify(t.$('#main h1').textContent==='材料管理'&&t.$('.feature-status').textContent.includes('开发中'),'Material heading and capability state are separate');
-  const formats=t.$$('.format-table tbody tr');verify(formats.length===3&&formats.every(r=>r.textContent.includes('计划接入')),'All three format rows state plans, never current support');
-  verify(formats.map(r=>r.cells[1].textContent).join('|')==='.xlsx|.txt|.csv','Planned extensions are explicit');
-  verify(!t.$('.format-table').closest('details'),'Format guidance remains visible without expansion');
-  verify(t.$('.import-disabled').getAttribute('aria-disabled')==='true'&&!t.$('.import-disabled button')&&!t.$('[data-action="pick-files"]'),'Disabled import region cannot open file picker');
-  verify(!t.$('.prepare-guide').open&&!!t.$('.prepare-guide > summary'),'Preparation list is optional native disclosure');
-  verify(t.$('.prepare-guide').textContent.includes('不要先删行')&&t.$('.prepare-guide').textContent.includes('不默认当成人民币'),'Preparation preserves originals and explains currency boundary');
+  verify(t.$('#main h1').textContent==='材料管理'&&t.$('.feature-status').textContent.includes('技术预览'),'Material heading and capability state are separate');
+  verify(t.$('.preview-note').textContent.includes('完整 G0 尚未完成'),'Preview clearly discloses unfinished G0');
+  verify(t.$('.desktop-materials').textContent.includes('微信 27 列 TXT')&&t.$('.desktop-materials').textContent.includes('建行 32 列 XLSX'),'Supported templates are precise');
+  verify(!!t.$('[data-action="desktop-import"]')&&!t.$('[data-action="pick-files"]'),'Desktop import uses native selection only');
+  verify(t.$('.desktop-materials').textContent.includes('不删行或改表头'),'Material preparation preserves originals');
+  verify(t.$('.desktop-materials').textContent.includes('重复导入会被拒绝'),'Duplicate guard is explained');
+  verify(!t.$('[data-action="confirm-amount"]'),'Preview exposes no manual amount save');
   let fileReads=0;const file={get name(){fileReads++;return 'test.csv';}};
-  const drop=new t.w.Event('drop',{bubbles:true,cancelable:true});Object.defineProperty(drop,'dataTransfer',{value:{files:[file]}});t.$('.import-disabled').dispatchEvent(drop);
+  const drop=new t.w.Event('drop',{bubbles:true,cancelable:true});Object.defineProperty(drop,'dataTransfer',{value:{files:[file]}});t.$('.desktop-materials').dispatchEvent(drop);
   verify(drop.defaultPrevented&&fileReads===0&&!t.$('.modal'),'Disabled desktop drop does not even read file metadata');
   verify(t.$('#toast-root').textContent.includes('未读取或登记文件'),'Drop explains actual non-import result');t.close();
 

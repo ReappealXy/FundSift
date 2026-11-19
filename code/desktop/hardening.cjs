@@ -125,6 +125,9 @@ function validateCaseV1(db, record) {
   }
   const invalid = fileDiagnostics(db).diagnostics.find(item => !['not_published','batch_counts_missing','latest_import_failed'].includes(item.code));
   if (invalid) fail('FS_CASE_DATA', `材料“${invalid.fileName}”（${invalid.fileId}）、批次 ${invalid.batchId ?? '空'}：${invalid.message}`);
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='format_rule_config'").get()) {
+    require('./foundation.cjs').validateFoundationData(db);
+  }
   return true;
 }
 
@@ -377,6 +380,13 @@ function installScopeGuards(db, scope) {
     import_check: allowedCheck, format_rule: () => '0', case_info: () => '0',
     desktop_case_identity: () => '0', case_data_state: () => '0', case_summary: () => '0'
   };
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='format_rule_config'").get()) {
+    tables.format_rule_config = () => '0';
+    // An unassociated staging ledger is registered through the explicit full
+    // integrity entry point. Scoped publication may only touch its own batch.
+    tables.archive_entry = row => scope.source ? `EXISTS(SELECT 1 FROM main.import_batch b
+      WHERE b.id=${row}.batch_id AND b.source_file_id IN (SELECT id FROM temp.fundsift_write_scope))` : '0';
+  }
   for (const [table, allowed] of Object.entries(tables)) {
     for (const event of ['INSERT','UPDATE','DELETE']) {
       const name = `fundsift_scope_${table}_${event.toLowerCase()}`;
@@ -519,5 +529,5 @@ function withCaseReadSnapshot(db, callback) {
   }
 }
 
-module.exports = { installCaseV2, validateCaseV1, readSummary, refreshSummary,
+module.exports = { installCaseV2, validateCaseV1, readSummary, refreshSummary, rememberCaseState: remember,
   beginCaseMutation, runCaseTransaction, runCaseIntegrityTransaction, withCaseReadSnapshot, EFFECTIVE_FLOW_FROM };

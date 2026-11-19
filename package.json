@@ -1,6 +1,6 @@
 {
   "name": "fundsift",
-  "version": "0.1.4",
+  "version": "0.2.0-preview.1",
   "private": true,
   "author": "东启",
   "description": "东启勘流：本地资金流水分析工作台",
@@ -16,7 +16,9 @@
     "build": "electron-builder --win portable --x64"
   },
   "dependencies": {
-    "better-sqlite3": "12.11.1"
+    "@xmldom/xmldom": "0.9.12",
+    "better-sqlite3": "12.11.1",
+    "yauzl": "3.4.0"
   },
   "devDependencies": {
     "ajv": "8.20.0",

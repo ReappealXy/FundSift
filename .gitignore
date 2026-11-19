@@ -8,4 +8,8 @@ artifacts/
 *.db
 __pycache__/
 samples/
+!scripts/samples/
+/scripts/samples/*
+!/scripts/samples/*.py
+!/scripts/samples/README.md
 golden-samples/

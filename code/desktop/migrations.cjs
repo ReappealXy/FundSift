@@ -28,6 +28,35 @@ function checkIntegrity(db) {
   }
 }
 
+function quote(name) { return '"' + name.replaceAll('"','""') + '"'; }
+
+// Lossless, typed logical projection. New columns/tables are intentionally not
+// compared with the old schema; every old field is ordered and hashed exactly.
+function logicalSnapshot(db, projection) {
+  const result = {};
+  const tables = projection ? Object.keys(projection) : db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map(row => row.name);
+  for (const name of tables) {
+    const columns = projection ? projection[name].columns : db.pragma(`table_info(${quote(name)})`).map(row => row.name);
+    const hash = createHash('sha256');
+    hash.update(JSON.stringify(columns)+'\n');
+    let count = 0n;
+    const select = columns.map(column => `${quote(column)},typeof(${quote(column)})`).join(',');
+    const order = columns.map(quote).join(',');
+    for (const row of db.prepare(`SELECT ${select} FROM ${quote(name)} ORDER BY ${order}`).raw().safeIntegers().iterate()) {
+      const encoded = [];
+      for (let i=0;i<row.length;i+=2) {
+        const value = row[i], type = row[i+1];
+        let encodedValue = Buffer.isBuffer(value) ? value.toString('hex') : typeof value==='bigint' ? value.toString() : value;
+        if (type==='real') { const bytes=Buffer.allocUnsafe(8);bytes.writeDoubleBE(value);encodedValue=bytes.toString('hex'); }
+        encoded.push([type,encodedValue]);
+      }
+      hash.update(JSON.stringify(encoded)+'\n'); count++;
+    }
+    result[name] = { columns, count: count.toString(), sha256: hash.digest('hex') };
+  }
+  return result;
+}
+
 function snapshot(db, identity) {
   const counts = {};
   const identityRows = {};
@@ -37,7 +66,8 @@ function snapshot(db, identity) {
       identityRows[name] = db.prepare(`SELECT * FROM "${name}" ORDER BY id`).all();
     }
   }
-  return { version: db.pragma('user_version', { simple: true }), applicationId: db.pragma('application_id', { simple: true }), identity, identityRows, counts };
+  return { version: db.pragma('user_version', { simple: true }), applicationId: db.pragma('application_id', { simple: true }), identity, identityRows, counts,
+    logicalTables: logicalSnapshot(db) };
 }
 
 function writeManifest(file, data, first = false) {
@@ -58,7 +88,8 @@ async function hashFile(filePath) {
 
 // The caller serializes all storage requests. No source write occurs before the
 // independent reader has finished and verified this committed WAL snapshot.
-async function migrate({ db, filePath, kind, identity, expectedSchema, validate, install, targetVersion = 2, hooks = {}, onProgress = () => {} }) {
+async function migrate({ db, filePath, kind, identity, expectedSchema, validate, install, targetVersion = 2,
+  rebuildForeignKeys = false, hooks = {}, onProgress = () => {} }) {
   const progress = phase => { try { onProgress(phase); } catch (_) {} };
   progress('checking');
   assertKnownSchema(db, expectedSchema, kind);
@@ -66,8 +97,13 @@ async function migrate({ db, filePath, kind, identity, expectedSchema, validate,
   checkIntegrity(db);
   let manifest, manifestPath, reader;
   let committed = false;
-  db.exec('BEGIN IMMEDIATE');
+  const foreignKeys = db.pragma('foreign_keys',{simple:true});
+  if (rebuildForeignKeys) {
+    if (db.inTransaction) throw fail('FS_MIGRATION_TRANSACTION','结构重建不能嵌套已有事务。');
+    db.pragma('foreign_keys=OFF');
+  }
   try {
+    db.exec('BEGIN IMMEDIATE');
     assertKnownSchema(db, expectedSchema, kind);
     validate(db);
     checkIntegrity(db);
@@ -108,8 +144,15 @@ async function migrate({ db, filePath, kind, identity, expectedSchema, validate,
     install(db);
     await hooks.afterInstall?.({ db, filePath, backupPath });
     checkIntegrity(db);
-    db.pragma(`user_version = ${targetVersion}`);
     await hooks.beforeCommit?.({ db, filePath });
+    checkIntegrity(db);
+    const after = logicalSnapshot(db,before.logicalTables);
+    if (JSON.stringify(after) !== JSON.stringify(before.logicalTables)) {
+      throw fail('FS_MIGRATION_CONTENT','升级前后原有业务字段的逻辑摘要不一致，已回滚。');
+    }
+    manifest.preservedLogicalTables = after;
+    manifest.logicalVerifiedAt = new Date().toISOString();
+    db.pragma(`user_version = ${targetVersion}`);
     db.exec('COMMIT'); committed = true;
     manifest.result = 'upgraded'; manifest.completedAt = new Date().toISOString();
     try { writeManifest(manifestPath, manifest); } catch (_) { /* A verified backup remains recoverable; never undo a committed upgrade. */ }
@@ -124,7 +167,10 @@ async function migrate({ db, filePath, kind, identity, expectedSchema, validate,
     }
     if (error.code?.startsWith('FS_')) throw error;
     throw fail('FS_MIGRATION_FAILED', committed ? '数据库升级已提交，后续记录未完成；请重新打开检查，不能用旧备份自动覆盖。' : '数据库升级未完成，已回滚；原有业务数据保留，请检查备份位置、权限和剩余空间后重试。');
-  } finally { if (reader) reader.close(); }
+  } finally {
+    if (reader) reader.close();
+    if (rebuildForeignKeys) db.pragma(`foreign_keys=${foreignKeys ? 'ON' : 'OFF'}`);
+  }
 }
 
-module.exports = { migrate, schemaSignature, assertKnownSchema, checkIntegrity };
+module.exports = { migrate, schemaSignature, assertKnownSchema, checkIntegrity, logicalSnapshot };

@@ -6,13 +6,14 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { WorkerClient } = require('./worker-client.cjs');
 const { chooseWorkspace } = require('./workspace-choice.cjs');
-const { createOperationStatus } = require('./operation-status.cjs');
+const { createOperationStatus, sanitizeReceipt } = require('./operation-status.cjs');
 
 const pagePath = path.resolve(__dirname, '../prototype/index.html');
 const pageURL = pathToFileURL(pagePath).href;
 const schemaPath = path.resolve(__dirname, '../ddl_extract_check.sql');
 let window, worker, workspacePath = null, currentCaseId = null, quitReady = false, quitting = false;
 let settingsPath, smokeConfig;
+let smokeImportIndex = 0;
 let operation = Promise.resolve();
 let operationSequence = 0, activeStatus = null;
 
@@ -36,7 +37,9 @@ function safeError(error) {
     return { code: error.code, message };
   }
   const known = error.code && /^(FS_|WORKSPACE_|CASE_|INVALID_|DUPLICATE_|SCHEMA_|STORAGE_|WORKER_|SETTINGS_)/.test(error.code);
-  return { code: error.code || 'DESKTOP_ERROR', message: known ? error.message : '操作未完成，请检查目录权限后重试。原有案件不会被替换。' };
+  const receipt = sanitizeReceipt(error.receipt);
+  return { code: error.code || 'DESKTOP_ERROR', message: known ? error.message : '操作未完成，请检查目录权限后重试。原有案件不会被替换。',
+    ...(receipt ? { receipt } : {}) };
 }
 
 async function readSettings() {
@@ -105,7 +108,7 @@ function register(name, handler) {
 
 async function start() {
   settingsPath = path.join(app.getPath('userData'), 'workspace.json');
-  worker = new WorkerClient(schemaPath, { onProgress: ({ phase }) => activeStatus?.update(phase) });
+  worker = new WorkerClient(schemaPath, { onProgress: ({ phase, progress }) => activeStatus?.update(phase, progress) });
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => callback({ responseHeaders: {
     ...details.responseHeaders,
@@ -136,6 +139,53 @@ async function start() {
     await saveSettings(workspacePath, opened.id);
     currentCaseId = opened.id;
     return opened;
+  });
+  function requireCurrentCase(id) {
+    if (!workspacePath || typeof id !== 'string' || !currentCaseId || id !== currentCaseId) {
+      throw Object.assign(new Error('当前案件已变化，请重新打开案件后操作。'), { code: 'FS_CASE_CONTEXT' });
+    }
+  }
+  register('list-materials', async caseId => { requireCurrentCase(caseId); return worker.request('listMaterials', caseId); });
+  register('query-flows', async (caseId, options) => { requireCurrentCase(caseId); return worker.request('queryFlows', caseId, options); });
+  register('query-relations', async (caseId, options) => { requireCurrentCase(caseId); return worker.request('queryRelations', caseId, options); });
+  register('read-flow-source', async (caseId, options) => { requireCurrentCase(caseId); return worker.request('readFlowSource', caseId, options); });
+  register('choose-import', async caseId => {
+    requireCurrentCase(caseId);
+    const fixture = smokeConfig?.importFixtures ? smokeConfig.importFixtures[smokeImportIndex++] : null;
+    if (smokeConfig?.importFixtures && (!fixture || typeof fixture.filePath !== 'string' || !path.isAbsolute(fixture.filePath))) {
+      throw Object.assign(new Error('隔离烟测导入夹具无效或已用完。'), { code: 'FS_SMOKE_INPUT' });
+    }
+    activeStatus?.update('confirming-import');
+    const formats = [
+      {key:'alipay-account-17col-v1',name:'17列支付宝账户明细',extension:'csv'},
+      {key:'wechat-trades-27col-v1',name:'27列微信交易明细',extension:'txt'},
+      {key:'ccb-account-32col-v1',name:'32列建行账户交易明细',extension:'xlsx'}
+    ];
+    const formatChoice = fixture ? {response:formats.findIndex(item=>item.key===fixture.formatKey)} : await dialog.showMessageBox(window, { type: 'question', title: '选择材料格式（技术预览）',
+      message: '本次要导入哪一种材料？', detail: '仅支持列结构与已批准规则一致的材料。完整G0尚未完成；待核只读。支付宝余额明细不属于账户明细格式。',
+      buttons: ['支付宝账户 CSV', '微信交易 TXT', '建行账户 XLSX', '取消'], defaultId: 3, cancelId: 3, noLink: true });
+    const format = formats[formatChoice.response];
+    if (fixture && !format) throw Object.assign(new Error('隔离烟测格式无效。'), { code:'FS_SMOKE_INPUT' });
+    if (!format) return { cancelled: true };
+    activeStatus?.update('choosing-file');
+    const choice = fixture ? {filePaths:[fixture.filePath]} : await dialog.showOpenDialog(window, { title: `导入${format.name}（技术预览）`,
+      buttonLabel: '选择材料', properties: ['openFile'], filters: [{ name: format.name, extensions: [format.extension] }] });
+    if (choice.canceled || !choice.filePaths?.length) return { cancelled: true };
+    if (choice.filePaths.length !== 1 || typeof choice.filePaths[0] !== 'string' || !path.isAbsolute(choice.filePaths[0])) {
+      throw Object.assign(new Error('请选择一份本地材料。'), { code: 'FS_IMPORT_INPUT' });
+    }
+    activeStatus?.update('confirming-import');
+    const bank = format.key === 'ccb-account-32col-v1';
+    const policy = bank ? '采用交易日期加交易时间、元转分、借记出贷记进；负额、零额和未知值保留待核。账号与卡号分开保留。原始币种“人民币元”按批准映射记为CNY，其它币种依证据处理；余额仅保留，不做余额链校验。'
+      : format.key === 'wechat-trades-27col-v1' ? '采用交易时间、主金额按分、入记进出记出；主金额与收款金额不符等异常保留待核，完整平台用户ID原文保留。余额仅保留，不做余额链校验。'
+      : '采用付款时间、元转分、收入记进支出记出；其它、关闭交易和证据不明的行保留待核。本方平台身份完整保留。';
+    const confirmation = fixture ? {response:0} : await dialog.showMessageBox(window, { type: 'question', title: '确认本次材料与处理范围',
+      message: bank ? '请确认采用本格式的保守处理规则。' : '请确认所选材料中的金额全部为人民币。',
+      detail: `文件：${path.basename(choice.filePaths[0])}\n格式：${format.name}\n\n${policy}\n\n技术预览：完整G0尚未完成，待核只读，不自动合并或去重。${bank ? '币种按原文与批准映射处理，不作人民币默认推断。' : '确认即表示你已根据这份材料的来源核实币种为人民币；仅凭金额单位或列名不能确认币种。'}`,
+      buttons: [bank ? '按此规则导入' : '确认人民币并导入', '取消'], defaultId: 1, cancelId: 1, noLink: true });
+    if (confirmation.response !== 0) return { cancelled: true };
+    requireCurrentCase(caseId);
+    return worker.request('importFile', caseId, { filePath: choice.filePaths[0], formatKey: format.key, confirmedCny: !bank, confirmedAt: new Date().toISOString() });
   });
   window = new BrowserWindow({ width: 1440, height: 960, minWidth: 1024, minHeight: 720, show: false,
     title: '东启勘流', backgroundColor: '#ffffff', autoHideMenuBar: true,

@@ -2,6 +2,7 @@
 
 const path = require('node:path');
 const { utilityProcess } = require('electron');
+const { PHASES, sanitizeProgress, sanitizeReceipt } = require('./operation-status.cjs');
 
 class WorkerClient {
   constructor(schemaPath, { onProgress = () => {} } = {}) {
@@ -28,8 +29,9 @@ class WorkerClient {
       const request = this.pending.get(message?.id);
       if (!request) return;
       if (message.type === 'progress') {
-        if (['running', 'checking', 'backing-up', 'verifying-backup', 'upgrading'].includes(message.phase)) {
-          try { this.onProgress({ phase: message.phase }); } catch (_) { /* Feedback is not part of the write transaction. */ }
+        const progress = sanitizeProgress(message.progress);
+        if (PHASES.has(message.phase) && !['completed','failed','queued'].includes(message.phase) && progress !== null) {
+          try { this.onProgress({ phase: message.phase, ...(progress ? { progress } : {}) }); } catch (_) { /* Feedback is not part of the write transaction. */ }
         }
         return;
       }
@@ -37,7 +39,8 @@ class WorkerClient {
       this.pending.delete(message.id);
       if (message.ok) request.resolve(message.data);
       else request.reject(Object.assign(new Error(message.error?.message || '本地数据操作失败。'), {
-        code: message.error?.code || 'STORAGE_ERROR'
+        code: message.error?.code || 'STORAGE_ERROR',
+        ...(sanitizeReceipt(message.error?.receipt) ? { receipt: sanitizeReceipt(message.error.receipt) } : {})
       }));
     });
     this.child.on('exit', () => {

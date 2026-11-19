@@ -19,7 +19,8 @@ test('异步备份中的后续写入和关闭串行等待，失败不会断开�
     close() { operations.push('close'); }
   }
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../worker.cjs'), 'utf8'), {
-    require: name => { assert.equal(name, './storage.cjs'); return { WorkspaceStore: Store }; },
+    require: name => name === './storage.cjs' ? { WorkspaceStore: Store }
+      : require(path.resolve(__dirname, '..', name)),
     process: { argv: ['', '', 'fixture.sql'], parentPort: port }
   });
   for (const [id, method] of [[1, 'openWorkspace'], [2, 'createCase'], [3, 'close']]) port.emit('message', { data: { id, method } });
@@ -40,7 +41,8 @@ test('worker关闭只在已发送的存储请求结束后停止子进程', async
   child.postMessage = value => posted.push(value);
   child.kill = () => { killed = true; child.emit('exit'); };
   const context = { module: { exports: {} }, __dirname: path.resolve(__dirname, '..'), process: { stderr: { write() {} } }, setTimeout, clearTimeout,
-    require: name => name === 'electron' ? { utilityProcess: { fork: () => child } } : require(name) };
+    require: name => name === 'electron' ? { utilityProcess: { fork: () => child } }
+      : require(name.startsWith('./') ? path.resolve(__dirname, '..', name) : name) };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../worker-client.cjs'), 'utf8'), context);
   const client = new context.module.exports.WorkerClient('fixture.sql');
   child.emit('message', { ready: true });

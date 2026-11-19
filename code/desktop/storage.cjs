@@ -7,9 +7,10 @@ const { randomUUID, createHash } = require('node:crypto');
 const Database = require('better-sqlite3');
 const { migrate, schemaSignature, assertKnownSchema } = require('./migrations.cjs');
 const { installCaseV2, validateCaseV1, readSummary } = require('./hardening.cjs');
+const { installCaseV3, configureFoundation } = require('./foundation.cjs');
 
 const WORKSPACE_SCHEMA_VERSION = 2;
-const CASE_SCHEMA_VERSION = 2;
+const CASE_SCHEMA_VERSION = 3;
 const WORKSPACE_APP_ID = 0x46535753;
 const CASE_APP_ID = 0x46534341;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -40,11 +41,15 @@ function knownSignature(kind, version) {
     } else {
       sample.exec(BASE_SCHEMA);
       sample.exec('CREATE TABLE desktop_case_identity (id INTEGER PRIMARY KEY CHECK (id = 1), case_uuid TEXT NOT NULL UNIQUE)');
-      if (version === 2) {
+      if (version >= 2) {
         const record = { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', case_no: 'schema', case_name: 'schema', created_at: 'schema', updated_at: 'schema' };
         sample.prepare('INSERT INTO case_info(id,case_no,case_name,created_at) VALUES(1,?,?,?)').run(record.case_no, record.case_name, record.created_at);
         sample.prepare('INSERT INTO desktop_case_identity(id,case_uuid) VALUES(1,?)').run(record.id);
         sample.transaction(() => installCaseV2(sample, record))();
+        if (version >= 3) {
+          sample.pragma('foreign_keys=OFF');
+          sample.transaction(() => installCaseV3(sample, record))();
+        }
       }
     }
     const signature = schemaSignature(sample);
@@ -87,6 +92,7 @@ function wrap(error, code, message) {
 }
 
 function configure(db) {
+  configureFoundation(db);
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
   db.pragma('journal_mode = WAL');
@@ -220,6 +226,7 @@ class WorkspaceStore {
     this.catalog = null;
     this.caseDb = null;
     this.currentCaseId = null;
+    this.importRecovery = null;
   }
 
   inspectWorkspace(rootPath) {
@@ -290,6 +297,7 @@ class WorkspaceStore {
           if (this.caseDb) this.caseDb.close();
           this.caseDb = null;
           this.currentCaseId = null;
+          this.importRecovery = null;
         }
         return { workspacePath: this.workspacePath, cases, currentCaseId: this.currentCaseId };
       }
@@ -333,6 +341,7 @@ class WorkspaceStore {
       this.catalog = nextCatalog;
       this.caseDb = candidate.caseDb;
       this.currentCaseId = candidate.currentCaseId;
+      this.importRecovery = candidate.importRecovery;
       nextCatalog = null;
       return { workspacePath: this.workspacePath, cases, currentCaseId: this.currentCaseId };
     } catch (error) {
@@ -373,17 +382,18 @@ class WorkspaceStore {
     try {
       db = new Database(filePath, { fileMustExist: true });
       const version = db.pragma('user_version', { simple: true });
-      if (![1, CASE_SCHEMA_VERSION].includes(version) || db.pragma('application_id', { simple: true }) !== CASE_APP_ID) {
+      if (![1, 2, CASE_SCHEMA_VERSION].includes(version) || db.pragma('application_id', { simple: true }) !== CASE_APP_ID) {
         throw failure('FS_CASE_VERSION', '该案件数据库版本尚不支持，不能直接覆盖或升级。');
       }
       assertKnownSchema(db, knownSignature('case', version), '案件数据库');
       assertCaseIdentity(db, record);
-      if (version === 1) {
+      if (version < CASE_SCHEMA_VERSION) {
         configure(db);
         await migrate({ db, filePath, kind: '案件', identity: { caseUuid: record.id, caseNumber: record.case_no, caseName: record.case_name },
-          expectedSchema: knownSignature('case', 1),
+          expectedSchema: knownSignature('case', version), targetVersion: CASE_SCHEMA_VERSION, rebuildForeignKeys: true,
           validate: database => { assertCaseIdentity(database, record); validateCaseV1(database, record); },
-          install: database => installCaseV2(database, record), hooks: this.migrationHooks, onProgress: this.onProgress });
+          install: database => { if (version === 1) installCaseV2(database, record); installCaseV3(database, record); },
+          hooks: this.migrationHooks, onProgress: this.onProgress });
       }
       configure(db);
       return db;
@@ -443,6 +453,7 @@ class WorkspaceStore {
       db = new Database(path.join(directory, 'case.sqlite'));
       configure(db);
       const schema = fs.readFileSync(this.schemaPath, 'utf8');
+      db.pragma('foreign_keys=OFF');
       db.transaction(() => {
         db.exec(schema);
         db.prepare('INSERT INTO case_info (id,case_no,case_name,created_at) VALUES (1,?,?,?)').run(number, name, timestamp);
@@ -450,8 +461,10 @@ class WorkspaceStore {
         db.prepare('INSERT INTO desktop_case_identity (id,case_uuid) VALUES (1,?)').run(id);
         db.pragma(`application_id = ${CASE_APP_ID}`);
         installCaseV2(db, record);
+        installCaseV3(db, record);
         db.pragma(`user_version = ${CASE_SCHEMA_VERSION}`);
       })();
+      db.pragma('foreign_keys=ON');
       db.close(); db = null;
       this.catalog.transaction(() => this.catalog.prepare(`INSERT INTO workspace_case
         (id,case_no,case_name,relative_path,created_at,updated_at,last_opened_at)
@@ -511,12 +524,17 @@ class WorkspaceStore {
     let nextDb;
     try {
       nextDb = await this._openCaseDatabase(record);
+      // Only an explicit case open performs import recovery. Listing cases
+      // must not turn an interrupted batch into a business-state mutation.
+      const { recoverInterruptedImports } = require('./import-service.cjs');
+      const importRecovery = recoverInterruptedImports({ db: nextDb, record, caseDirectory: this._casePath(id) });
       const result = this._dto(record, nextDb, true);
       const openedAt = new Date().toISOString();
       this.catalog.prepare('UPDATE workspace_case SET last_opened_at = ? WHERE id = ?').run(openedAt, id);
       if (this.caseDb) this.caseDb.close();
       this.caseDb = nextDb; nextDb = null;
       this.currentCaseId = id;
+      this.importRecovery = importRecovery;
       return { ...result, openedAt };
     } catch (error) {
       if (nextDb) nextDb.close();
@@ -529,6 +547,7 @@ class WorkspaceStore {
     if (this.catalog) { this.catalog.close(); this.catalog = null; }
     this.workspacePath = null;
     this.currentCaseId = null;
+    this.importRecovery = null;
   }
 }
 

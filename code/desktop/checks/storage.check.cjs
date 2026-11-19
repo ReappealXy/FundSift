@@ -43,7 +43,7 @@ test('空工作区、建案、每案目录与关闭重开后持久化', async t 
   assert.ok(fs.statSync(path.join(root, 'cases', first.id, 'exports')).isDirectory());
   assert.doesNotThrow(() => JSON.stringify(first));
   const db = new Database(casePath(root, first.id));
-  assert.equal(db.pragma('user_version', { simple: true }), 2);
+  assert.equal(db.pragma('user_version', { simple: true }), 3);
   assert.equal(db.pragma('journal_mode', { simple: true }), 'wal');
   assert.equal(db.prepare('SELECT case_no FROM case_info WHERE id = 1').get().case_no, 'TEST-001');
   db.close();
@@ -195,6 +195,7 @@ test('坏current写入被拒；受控业务事务统计只计当前done，不叠
   const item = await store.createCase({ name: '统计测试', number: 'S1' });
   store.close();
   const db = new Database(casePath(root, item.id));
+  require('../foundation.cjs').configureFoundation(db);
   db.pragma('foreign_keys=ON');
   const record = { id:item.id, case_no:item.number, case_name:item.name, created_at:item.createdAt, updated_at:item.updatedAt };
   runCaseIntegrityTransaction(db,record,()=>{
@@ -445,6 +446,7 @@ test('关闭后整份工作区复制到新根，新Store读取身份和业务统
   const item = await store.createCase({ name: '整份复制验证', number: 'COPY-1' });
   store.close();
   const db = new Database(casePath(root, item.id));
+  require('../foundation.cjs').configureFoundation(db);
   db.pragma('foreign_keys=ON');
   const record = { id: item.id, case_no: item.number, case_name: item.name, created_at: item.createdAt, updated_at: item.updatedAt };
   runCaseIntegrityTransaction(db, record, () => db.exec(`

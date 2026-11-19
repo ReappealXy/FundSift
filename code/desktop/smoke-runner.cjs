@@ -46,7 +46,7 @@ async function run({ app, window, worker, config, getState, saveSettings, setWor
   verify(await js('Boolean(window.fundsiftDesktop)'), 'isolated preload bridge exists');
   verify(await js('typeof window.fundsiftDesktop.onOperationStatus === "function"'), 'isolated preload exposes task status subscription');
   await wait('window.FUND_INTRO && document.querySelector("#intro-screen [data-action=help]")');
-  verify(await js('window.FUND_COPY.desktop === true && document.querySelector("#intro-screen").textContent.includes("本地桌面版") && document.querySelector("#intro-screen").textContent.includes("案件管理可用") && document.querySelector("#intro-screen").textContent.includes("流水导入、复核与导出开发中")'), 'real preload selects desktop introduction copy');
+  verify(await js('window.FUND_COPY.desktop === true && document.querySelector("#intro-screen").textContent.includes("本地桌面版") && document.querySelector("#intro-screen").textContent.includes("案件管理可用") && document.querySelector("#intro-screen").textContent.includes("三种具体格式导入技术预览")'), 'real preload selects desktop introduction copy');
   await js('document.querySelector("#intro-screen [data-action=help]").focus();document.querySelector("#intro-screen [data-action=help]").click()');
   await wait('document.querySelector("#modal-root .modal[data-help=true]") && document.activeElement.closest(".modal") !== null');
   verify(await js('!document.querySelector("#modal-root").hidden && !document.querySelector("#modal-root").inert && document.querySelector("#modal-root .modal").getClientRects().length > 0 && !document.querySelector("#modal-root .modal").closest("[hidden],[inert]")'), 'introduction help is visible and not inert');
@@ -67,17 +67,18 @@ async function run({ app, window, worker, config, getState, saveSettings, setWor
       const backups = await fs.readdir(path.join(folder, 'backup'));
       verify(backups.length === 1, 'one versioned backup for ' + path.basename(folder));
       const manifest = JSON.parse(await fs.readFile(path.join(folder, 'backup', backups[0], 'manifest.json'), 'utf8'));
-      verify(manifest.result === 'upgraded' && manifest.targetVersion === 2 && /^[0-9a-f]{64}$/.test(manifest.sha256), 'verified backup manifest for ' + manifest.kind);
+      const targetVersion = folder === config.workspace ? 2 : 3;
+      verify(manifest.result === 'upgraded' && manifest.targetVersion === targetVersion && /^[0-9a-f]{64}$/.test(manifest.sha256), 'verified backup manifest for ' + manifest.kind);
     }
     await getState();
-    verify((await fs.readdir(path.join(config.workspace, 'backup'))).length === 1, 'v2 refresh does not repeat migration');
+    verify((await fs.readdir(path.join(config.workspace, 'backup'))).length === 1, 'current-version refresh does not repeat migration');
     await enterIntro();
   } else if (config.phase === 'create') {
     verify(initial.needsWorkspace && initial.cases.length === 0, 'first launch requires user folder selection');
     await enterIntro();
     await wait('document.querySelector(".desktop-setup [data-action=choose-workspace]") !== null');
     verify(await js('document.querySelector(".desktop-setup h2").textContent === "先选择数据存放位置" && document.querySelector(".desktop-setup [data-action=choose-workspace]").textContent.includes("选择存放文件夹")'), 'first entry shows storage setup before a workspace exists');
-    verify(await js('document.querySelector(".setup-input-note").textContent.includes("不会导入文件夹里的流水") && document.querySelector(".setup-status").textContent.includes("流水导入等功能开发中")'), 'first-use guidance separates saving cases from importing flows');
+    verify(await js('document.querySelector(".setup-input-note").textContent.includes("不会导入文件夹里的流水") && document.querySelector(".setup-status").textContent.includes("具体格式导入")'), 'first-use guidance separates saving cases from importing flows');
     verify(await js('(()=>{const text=document.querySelector(".setup-details").textContent;return ["原来保存全部案件的文件夹","cases","备份","升级","不要强行关闭"].every(part=>text.includes(part));})()'), 'first-use guidance explains whole-folder selection and upgrade precautions');
     verify((await getState()).needsWorkspace, 'viewing first-use guidance does not select or create a workspace');
     await worker.request('openWorkspace', config.workspace);
@@ -138,14 +139,53 @@ async function run({ app, window, worker, config, getState, saveSettings, setWor
     await enterIntro();
   }
   await js('document.querySelector("[data-action=nav][data-route=materials]").click()');
-  await wait('document.querySelector(".desktop-materials .format-table tbody") !== null');
-  verify(await js('JSON.stringify(Array.from(document.querySelectorAll(".format-table tbody tr")).map(row=>Array.from(row.cells).map(cell=>cell.textContent))) === ' + JSON.stringify(JSON.stringify([
-    ['建设银行', '.xlsx', '计划接入具体流水模板'],
-    ['微信账单', '.txt', '计划接入具体导出格式'],
-    ['支付宝账单', '.csv', '计划接入具体导出格式']
-  ]))), 'materials lists the three planned source formats');
-  verify(await js('document.querySelector(".desktop-materials .feature-status").textContent === "流水导入开发中" && document.querySelector(".desktop-materials .import-disabled").getAttribute("aria-disabled") === "true" && document.querySelector(".desktop-materials").textContent.includes("尚未完成导入验收")'), 'materials explicitly marks import as unavailable and awaiting validation');
-  verify(!await js('Boolean(document.querySelector("#application [data-action=pick-files],#application [data-action=do-export]"))'), 'desktop materials exposes no file picker or export action');
+  await wait('document.querySelector(".desktop-materials .feature-status") !== null && !document.querySelector(".desktop-materials button").disabled');
+  verify(await js('document.querySelector(".desktop-materials").textContent.includes("微信 27 列 TXT") && document.querySelector(".preview-note").textContent.includes("完整 G0 尚未完成")'), 'materials names exact preview templates and G0 boundary');
+  verify(await js('Boolean(document.querySelector("[data-action=desktop-import]")) && !document.querySelector("#application [data-action=pick-files],#application [data-action=do-export]")'), 'desktop material uses real native import only');
+  if(config.phase==='create'){
+    for(let index=0;index<3;index++){
+      await js('document.querySelector("[data-action=desktop-import]").click()');
+      await wait('document.querySelector(".import-receipt")?.textContent.includes("导入已发布") && !document.querySelector("[data-action=desktop-import]").disabled');
+      verify(await js('document.querySelectorAll(".desktop-materials tbody tr").length === '+(index+1)), 'native import publishes material '+index);
+      verify(await js('document.querySelector(".import-receipt").textContent.includes("写入 2 条") && document.querySelector(".import-receipt").textContent.includes("待核 1 条")'), 'published receipt exact counts '+index);
+    }
+    await js('document.querySelector("[data-action=desktop-import]").click()');
+    await wait('document.querySelector(".desktop-data-error")?.textContent.includes("相同原件")');
+    verify(await js('document.querySelectorAll(".desktop-materials tbody tr").length===3 && document.querySelector(".import-receipt").textContent.includes("导入未发布")'), 'duplicate refuses publication with visible receipt');
+  }
+  if(config.phase!=='upgrade'){
+    verify(await js('document.querySelectorAll(".desktop-materials tbody tr").length===3'), 'all imported materials survive reopen');
+    await js('document.querySelector("[data-action=nav][data-route=flows]").click()');
+    await wait('document.querySelectorAll(".desktop-ledger tbody tr").length===6');
+    verify(await js('document.querySelector(".desktop-ledger").textContent.includes("-1.01") && !document.querySelector("[data-action=confirm-amount]")'), 'real DB amount is precise and desktop review cannot edit');
+    await js('document.querySelector("[data-action=desktop-source]").click()');
+    await wait('document.querySelector(".raw-evidence tbody tr") !== null');
+    verify(await js('document.querySelector(".modal").textContent.includes("归档原件已核验") && document.querySelector(".source-hash").textContent.includes("SHA256")'), 'real archive source is verified and viewable');
+    await js('document.querySelector(".modal-head [data-action=close-modal]").click()');
+    await js('document.querySelector("[data-action=desktop-relations]").click()');
+    await wait('document.querySelector(".relation-candidate") !== null');
+    verify(await js('document.querySelector(".modal").textContent.includes("同一付款记录候选") && document.querySelector(".modal").textContent.includes("不合并、不去重、不计算净额")'), 'cross-platform candidate evidence keeps source records');
+    await js('document.querySelector(".modal-head [data-action=close-modal]").click()');
+    await js('document.querySelector("[data-action=nav][data-route=review]").click()');
+    await wait('document.querySelectorAll(".desktop-ledger tbody tr").length===3');
+    verify(await js('document.querySelector(".desktop-flows").textContent.includes("待核只读清单") && !document.querySelector("[data-action=confirm-amount]")'), 'pending query isolates three real unresolved records');
+    if(config.phase==='create'){
+      await js('document.querySelector("#toast-root").replaceChildren()');
+      window.setContentSize(1024,720);
+      await js('document.querySelector("[data-action=nav][data-route=flows]").click()');
+      await wait('document.querySelectorAll(".desktop-ledger tbody tr").length===6');
+      await js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+      verify(await js('document.documentElement.scrollWidth<=innerWidth && document.querySelector(".desktop-ledger").closest(".table-scroll").clientWidth < document.querySelector(".desktop-ledger").scrollWidth'), '1024 layout confines wide ledger scrolling to table');
+      await fs.writeFile(config.screenshot.replace('.png','-flows1024.png'),(await window.webContents.capturePage()).toPNG());
+      await js('document.querySelector("[data-action=desktop-source]").click()');
+      await wait('document.querySelector(".raw-evidence tbody tr") !== null');
+      verify(await js('(()=>{const body=document.querySelector(".modal-body"),r=document.querySelector(".modal").getBoundingClientRect();body.scrollTop=body.scrollHeight;return body.scrollTop>0 && r.top>=0 && r.bottom<=innerHeight;})()'), '1024 raw evidence modal remains inside viewport and scrolls fully');
+      await js('document.querySelector(".modal-body").scrollTop=0;new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+      await fs.writeFile(config.screenshot.replace('.png','-source1024.png'),(await window.webContents.capturePage()).toPNG());
+      await js('document.querySelector(".modal-head [data-action=close-modal]").click()');
+      window.setContentSize(1440,960);
+    }
+  }
   // Navigate back to the real workbench before capturing the shipped interface.
   await js('document.querySelector("[data-action=nav][data-route=home]")?.click()');
   const expectedName = config.phase === 'upgrade' ? '旧版合成验收案' : 'M0 合成验收案';

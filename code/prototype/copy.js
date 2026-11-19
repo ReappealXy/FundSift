@@ -6,8 +6,8 @@
     desktop,
     terms,
     operation: {
-      names: { 'get-state': '读取案件', 'list-cases': '刷新案件列表', 'choose-workspace': '设置数据存放位置', 'create-case': '新建案件', 'open-case': '打开案件' },
-      phases: { queued: '等待前面的操作完成', running: '正在处理', 'choosing-location': '等待选择存放文件夹', 'confirming-location': '等待确认存放位置', checking: '正在检查数据', 'backing-up': '正在备份旧版数据', 'verifying-backup': '正在校验备份', upgrading: '正在升级旧版数据', 'saving-settings': '正在保存设置', completed: '操作完成', failed: '操作未完成' },
+      names: { 'get-state': '读取案件', 'list-cases': '刷新案件列表', 'choose-workspace': '设置数据存放位置', 'create-case': '新建案件', 'open-case': '打开案件', 'choose-import':'导入材料', 'list-materials':'读取材料', 'query-flows':'读取流水', 'read-flow-source':'核验原文', 'query-relations':'查找关联候选' },
+      phases: { queued: '等待前面的操作完成', running: '正在处理', 'choosing-location': '等待选择存放文件夹', 'confirming-location': '等待确认存放位置', checking: '正在检查数据', 'backing-up': '正在备份旧版数据', 'verifying-backup': '正在校验备份', upgrading: '正在升级旧版数据', 'saving-settings': '正在保存设置', 'choosing-file':'等待选择原始材料', 'confirming-import':'等待确认材料规则', archiving:'正在归档原件',parsing:'正在检查格式',importing:'正在写入流水','verifying-archive':'正在复验归档',publishing:'正在发布完整批次','reading-source':'正在核验来源原文', completed: '操作完成', failed: '操作未完成' },
       elapsed: '已用时 {seconds} 秒',
       pending: '完成后会自动显示结果。',
       waiting: '本次操作尚未返回结果，请继续等待，不要重复操作或强行关闭软件。',
@@ -15,23 +15,23 @@
     },
     intro: {
       edition: desktop ? '本地桌面版' : '网页交互演示',
-      description: desktop ? '先把案件建起来，流水整理与核查随后接入。' : '使用合成数据，体验流水整理与核查流程。',
-      status: desktop ? '案件管理可用 · 流水导入、复核与导出开发中' : '合成数据仅供体验 · 不会保存真实案件',
+      description: desktop ? '按案件导入原始流水，保留逐笔原文与处理依据。' : '使用合成数据，体验流水整理与核查流程。',
+      status: desktop ? '案件管理可用 · 三种具体格式导入技术预览 · 待核只读' : '合成数据仅供体验 · 不会保存真实案件',
       enter: desktop ? '进入案件工作台' : '进入示例工作台',
       help: terms.help,
-      capabilitiesHeading: desktop ? '后续能力规划' : '功能交互示意',
-      capabilitiesSubheading: desktop ? '流水功能开发中' : '从材料整理，到结果复核',
+      capabilitiesHeading: desktop ? '当前预览能力' : '功能交互示意',
+      capabilitiesSubheading: desktop ? '具体格式导入与只读核对' : '从材料整理，到结果复核',
       features: desktop ? [
-        { title: '多源流水，统一整理', body: '计划汇集银行与支付平台材料，在同一张流水表中查看。' },
-        { title: '异常分开，逐笔核对', body: '计划区分金额待核与余额差异，保留每次确认的依据。' },
-        { title: '保留原值，回看来源', body: '计划对应来源材料与记录位置，方便回头核查。' }
+        { title: '具体模板，保真导入', body: '支持支付宝账户CSV、微信27列TXT、建行32列XLSX的具体模板。' },
+        { title: '异常保留，只读核对', body: '查看标准金额和待核原因，人工修改与正式导出开发中。' },
+        { title: '保留原值，回看来源', body: '核验归档原件与来源坐标，保留重复编号对应的不同记录。' }
       ] : [
         { title: '多源流水，统一整理', body: '汇集合成的银行与支付平台材料，在同一张流水表中查看。' },
         { title: '异常分开，逐笔核对', body: '区分金额待核与余额差异，体验逐笔确认与记录依据。' },
         { title: '保留原值，回看来源', body: '查看示例材料与记录位置，体验来源核查。' }
       ],
-      workflowHeading: desktop ? '后续核查流程' : '一次核查，四步衔接',
-      workflowNote: desktop ? '以下四步均在开发中' : '使用合成数据演示',
+      workflowHeading: desktop ? '从材料到逐笔核对' : '一次核查，四步衔接',
+      workflowNote: desktop ? '技术预览，完整G0尚未完成' : '使用合成数据演示',
       steps: [
         { title: '导入案件材料', body: '银行与平台原始流水' },
         { title: '整理流水明细', body: '对齐字段，保留来源' },
@@ -48,7 +48,7 @@
       body: '软件会把你创建的案件保存在这里，方便下次打开继续使用。请选择一个准备长期保留的文件夹。',
       inputNote: '这一步只设置保存位置，不会导入文件夹里的流水。原始流水文件将在案件的“材料管理”中另外选择。',
       choose: '选择存放文件夹', choosing: '正在选择…',
-      status: '当前可用：创建、保存和打开案件。流水导入等功能开发中。',
+      status: '当前可用：创建、保存和打开案件；建案后可试用具体格式导入，待核只读。',
       existingTitle: '已有旧版案件？',
       existing: [
         '请选原来保存全部案件的文件夹，不要选 cases 文件夹、某个案件自己的文件夹，或原始流水文件夹。',
@@ -67,7 +67,7 @@
       readFailed: '案件数据暂时无法读取',
       retry: '重试读取', refresh: '刷新列表',
       unknown: '“—”表示统计尚待检查；具体原因见对应案件的数据状态。',
-      overview: '工作台统计用于概览。真实流水查询、正式汇总与导出尚在开发中。',
+      overview: '工作台统计用于概览。当前可查已发布流水与待核原因；正式汇总与导出尚在开发中。',
       incomplete: '部分案件暂不可读或统计尚待检查；“—”表示总数未知，部分案件数量不代表全部结果。具体原因见案件列表。',
       persistence: '本机保存 · 下次可从案件列表继续打开',
       searchScope: '搜索范围：这个数据存放位置内的案件名称与编号，不搜索流水。',
@@ -119,8 +119,8 @@
     help: {
       title: terms.help,
       sections: desktop ? [
-        { title: '当前能做什么？', body: ['选择数据存放位置，创建、打开和切换案件。名称与编号保存在本机，下次可以继续打开。', '流水导入、流水明细查询、异常复核和正式导出开发中，本版本暂不能导入案件材料或生成流水分析结果。'] },
-        { title: '下一步做什么？', body: ['第一次使用：选择存放文件夹 → 新建案件 → 查看材料准备说明。已有案件可从列表打开。', '原始流水后续在“材料管理”中另外选择，设置保存位置不会自动导入文件。'] },
+        { title: '当前能做什么？', body: ['选择数据存放位置，创建、打开和切换案件。名称与编号保存在本机，下次可以继续打开。', '技术预览仅支持指定的支付宝账户17列CSV、微信27列TXT和建行32列XLSX，可查看流水、待核原因与归档原文；完整G0尚未完成。人工修改、正式汇总及导出开发中。'] },
+        { title: '下一步做什么？', body: ['第一次使用：选择存放文件夹 → 新建案件 → 材料管理中选择原始材料 → 查看流水与只读待核。已有案件可从列表打开。', '每次选择材料后会显示格式及规则确认。其它模板会报错；设置保存位置不会自动导入文件。'] },
         { title: '出了问题怎么办？', body: ['文件夹被移动、改名或所在磁盘断开时，先恢复原保存位置，再重试读取。', '检查或升级失败时，请保留整个数据文件夹和错误信息，不要自行删除或覆盖案件文件；需要时联系维护人员。', '“—”表示统计尚待检查，具体原因见案件列表；不要当成零。'] }
       ] : [
         { title: '当前能做什么？', body: ['使用合成数据体验材料、流水明细、复核与示例导出。刷新后恢复初始状态，不会保存真实案件。'] },
@@ -139,7 +139,7 @@
     },
     feedback: {
       cancelled: '已取消选择。准备好后，可点击“选择存放文件夹”。',
-      blockedImport: '流水导入开发中，未读取或登记文件。',
+      blockedImport: '请在材料管理点击“选择原始材料”。拖放或网页文件选择未读取或登记文件。',
       locationMissing: '请检查文件夹是否移动、改名，或所在磁盘是否断开；恢复原保存位置后重试读取。',
       upgradeFailed: '请保留整个数据文件夹和错误信息，联系维护人员；不要删除或覆盖原文件。',
       space: '磁盘空间不足。请释放空间后重试，并保留原案件文件。',

@@ -1,11 +1,21 @@
 'use strict';
 
 const { WorkspaceStore } = require('./storage.cjs');
+const { DesktopData } = require('./desktop-data.cjs');
+const { PHASES, sanitizeProgress, sanitizeReceipt } = require('./operation-status.cjs');
 let activeRequest = null;
-const store = new WorkspaceStore({ schemaPath: process.argv[2], onProgress: phase => {
-  if (activeRequest !== null) process.parentPort.postMessage({ id: activeRequest, type: 'progress', phase });
-} });
-const methods = new Set(['inspectWorkspace', 'openWorkspace', 'listCases', 'createCase', 'openCase', 'close']);
+function publishProgress(event) {
+  const phase = event.phase === 'completed' ? 'publishing' : event.phase;
+  const progress = sanitizeProgress(event);
+  if (activeRequest !== null && PHASES.has(phase) && !['completed','failed','queued'].includes(phase) && progress !== null) {
+    process.parentPort.postMessage({ id: activeRequest, type: 'progress', phase, ...(progress ? { progress } : {}) });
+  }
+}
+const store = new WorkspaceStore({ schemaPath: process.argv[2], onProgress: phase => publishProgress({ phase }) });
+const desktopData = new DesktopData(store, { onProgress: publishProgress });
+const methods = new Set(['inspectWorkspace', 'openWorkspace', 'listCases', 'createCase', 'openCase', 'close',
+  'importFile', 'listMaterials', 'queryFlows', 'readFlowSource', 'queryRelations']);
+const dataMethods = new Set(['importFile', 'listMaterials', 'queryFlows', 'readFlowSource', 'queryRelations']);
 let operation = Promise.resolve();
 
 process.parentPort.on('message', ({ data: request }) => {
@@ -17,12 +27,13 @@ process.parentPort.on('message', ({ data: request }) => {
     activeRequest = id;
     try {
       process.parentPort.postMessage({ id, type: 'progress', phase: 'running' });
-      const data = await store[method](...args);
+      const data = await (dataMethods.has(method) ? desktopData[method](...args) : store[method](...args));
       process.parentPort.postMessage({ id, ok: true, data });
     } catch (error) {
       process.parentPort.postMessage({ id, ok: false, error: {
         code: error.code || 'STORAGE_ERROR',
-        message: error.message || '本地数据操作失败，请重试。'
+        message: error.message || '本地数据操作失败，请重试。',
+        ...(sanitizeReceipt(error.receipt) ? { receipt: sanitizeReceipt(error.receipt) } : {})
       } });
     } finally { activeRequest = null; }
   });

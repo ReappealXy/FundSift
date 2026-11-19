@@ -52,7 +52,8 @@ test('worker中间进度不兑现请求，不丢失关闭等待；未知或迟�
   child.postMessage = message => posted.push(message);
   child.kill = () => { killed = true; child.emit('exit'); };
   const context = { module: { exports: {} }, __dirname: path.resolve(__dirname, '..'), process: { stderr: { write() {} } },
-    setTimeout, clearTimeout, require: name => name === 'electron' ? { utilityProcess: { fork: () => child } } : require(name) };
+    setTimeout, clearTimeout, require: name => name === 'electron' ? { utilityProcess: { fork: () => child } }
+      : require(name.startsWith('./') ? path.resolve(__dirname, '..', name) : name) };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../worker-client.cjs'), 'utf8'), context);
   const client = new context.module.exports.WorkerClient('fixture.sql', { onProgress: value => phases.push(value.phase) });
   child.emit('message', { ready: true });
