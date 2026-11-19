@@ -26,7 +26,13 @@
   const state = {route:'home',caseId:desktop?null:'case-1',caseQuery:'',caseTab:'all',fileQuery:'',fileTab:'all',filePlatform:'all',flowQuery:'',flowTab:'all',flowPlatform:'all',sourceId:'',page:1,pageSize:15,selected:new Set(),inspected:null,reviewTab:'all',reviewId:null,density:false,dateFrom:'',dateTo:'',minAmount:'',maxAmount:'',exportScope:'all',exportFormat:'xlsx',exportSource:true};
   let lastFocus = null, importQueue = [], modalLayers = null;
   const desktopOperations = new Map();
-  const live = {materials:[],page:null,cursor:null,history:[],source:'',filter:'all',loading:false,error:'',receipt:null,epoch:0};
+  const live = {materials:[],page:null,cursor:null,history:[],source:'',filter:'all',loading:false,error:'',receipt:null,
+    workpaper:null,exportError:'',exporting:false,cleanup:null,epoch:0};
+  const formatNames = new Map([
+    ['alipay-account-17col-v1','支付宝账户 CSV'],
+    ['wechat-trades-27col-v1','微信交易 TXT'],
+    ['ccb-account-32col-v1','建行账户 XLSX']
+  ]);
   const exactMoney = value => {
     if(value===null||value===undefined)return '—';
     if(!/^(?:0|-?[1-9]\d*)$/.test(String(value)))return '—';
@@ -54,9 +60,16 @@
     if(!current){panel.replaceChildren();return;}
     panel.dataset.operationId=String(current.operationId);
     panel.classList.toggle('is-waiting',current.waitingLong);
-    const title=`${copy.operation.names[current.operation]} · ${copy.operation.phases[current.phase]}`;
+    const phase=current.operation==='export-workpaper'&&current.phase==='publishing'?'正在保存底稿':copy.operation.phases[current.phase];
+    const title=`${copy.operation.names[current.operation]} · ${phase}`;
     const duration=current.elapsedMs>=1000?` · ${copy.operation.elapsed.replace('{seconds}',String(Math.floor(current.elapsedMs/1000)))}`:'';
-    const measured=current.progress?.writtenRows!==undefined?`已写入 ${current.progress.writtenRows} / ${current.progress.totalRows??'—'} 条；待核 ${current.progress.pendingRows??'—'} 条。`:current.progress?.copiedBytes!==undefined?`已归档 ${current.progress.copiedBytes} / ${current.progress.totalBytes??'—'} 字节。`:'';
+    let measured='';
+    if(current.progress?.writtenRows!==undefined){
+      const rows=`${current.progress.writtenRows} / ${current.progress.totalRows??'—'} 条`;
+      measured=current.operation==='export-workpaper'?`已生成 ${rows}。`:`已写入 ${rows}。待核 ${current.progress.pendingRows??'—'} 条。`;
+    }else if(current.progress?.copiedBytes!==undefined){
+      measured=`已归档 ${current.progress.copiedBytes} / ${current.progress.totalBytes??'—'} 字节。`;
+    }
     const detail=['choosing-location','confirming-location','choosing-file','confirming-import'].includes(current.phase)?copy.operation.awaitingChoice:measured||(current.waitingLong?copy.operation.waiting:copy.operation.pending);
     if(!panel.firstChild)panel.innerHTML='<div class="operation-heading"><span class="dot" aria-hidden="true"></span><strong></strong><span class="operation-duration num" aria-hidden="true"></span></div><p></p>';
     // Keep the live region stable: announce stage changes, not each elapsed second.
@@ -76,7 +89,7 @@
   const search = (id, placeholder, value) => `<label class="searchbox">${ico('search',15)}<input id="${id}" placeholder="${placeholder}" value="${esc(value)}" aria-label="${placeholder}" autocomplete="off"></label>`;
   function resetFlowFilters() {Object.assign(state,{flowQuery:'',flowTab:'all',flowPlatform:'all',sourceId:'',page:1,dateFrom:'',dateTo:'',minAmount:'',maxAmount:''});state.selected.clear();}
   function navigate(route, caseId) {
-    if (caseId && caseId !== state.caseId) {state.caseId = caseId;resetFlowFilters();Object.assign(state,{fileQuery:'',fileTab:'all',filePlatform:'all',reviewId:null,reviewTab:'all'});if(desktop){live.epoch++;Object.assign(live,{materials:[],page:null,cursor:null,history:[],source:'',filter:'all',receipt:null,error:''});}}
+    if (caseId && caseId !== state.caseId) {state.caseId = caseId;resetFlowFilters();Object.assign(state,{fileQuery:'',fileTab:'all',filePlatform:'all',reviewId:null,reviewTab:'all'});if(desktop){live.epoch++;Object.assign(live,{materials:[],page:null,cursor:null,history:[],source:'',filter:'all',receipt:null,error:'',workpaper:null,exportError:'',cleanup:null});}}
     state.inspected = null;state.route = labels[route] ? route : 'home';
     if (location.hash !== '#' + state.route) location.hash = state.route;
     render();$('#main').scrollTop = 0;
@@ -128,17 +141,48 @@
     if(!c)return heading+`<section class="panel">${empty('请先打开案件','从案件工作台新建案件，或打开已有案件。',btn('返回案件工作台','nav','home','primary','data-route="home"'))}</section>`;
     if(c.available===false)return heading+`<section class="panel desktop-error" role="alert">${empty('案件暂不可用',esc(c.error||'无法读取案件数据，请核对数据存放位置。'),btn('返回案件工作台','nav','home','primary','data-route="home"'))}</section>`;
     if(['materials','flows','review'].includes(state.route))return heading+desktopDataPage();
+    if(state.route==='exports'&&typeof desktopBridge.exportWorkpaper==='function')return heading+desktopExportPage();
     const detail=copy.stages[state.route];
     return heading+`<section class="panel desktop-stage"><div class="desktop-stage-symbol">${ico(detail.icon,29)}</div><h2>${detail.title}</h2><p>${detail.body}</p><div class="desktop-saved">${ico('checkCircle',15)}${copy.case.savedNote}</div>${btn('返回案件工作台','nav','home','','data-route="home"')}</section>`;
   }
-  function previewNote(){return '<p class="preview-note">技术预览 · 仅支持已验证的具体模板，完整 G0 尚未完成。待核仅可查看，人工修改、正式汇总与导出开发中。</p>';}
-  function receiptView(){const r=live.receipt;return r?`<div class="import-receipt" role="status"><strong>${r.state==='completed'?'导入已发布':'导入未发布'}</strong><span>写入 ${esc(r.importedRows??0)} 条 · 待核 ${esc(r.pendingRows??0)} 条 · 金额未确定 ${esc(r.unquantifiableRows??0)} 条</span>${r.errorCode?`<span>${esc(r.errorCode)}</span>`:''}</div>`:'';}
+  function previewNote(){return '<p class="preview-note">技术预览 · 完整 G0 尚未完成。待核记录可查看原文与处理依据，人工复核开发中。</p>';}
+  function receiptView(){
+    const r=live.receipt;
+    if(!r)return '';
+    const diagnostics=r.diagnosticRows==null?'':`<span>附加诊断涉及 ${esc(r.diagnosticRows)} 条</span>`;
+    return `<div class="import-receipt" role="status"><strong>${r.state==='completed'?'导入已发布':'导入未发布'}</strong><span>写入 ${esc(r.importedRows??0)} 条 · 待核 ${esc(r.pendingRows??0)} 条 · 金额未确定 ${esc(r.unquantifiableRows??0)} 条</span>${diagnostics}${r.errorCode?`<span>${esc(r.errorCode)}</span>`:''}</div>`;
+  }
+  function stagingCleanupView(){
+    const cleanup=live.cleanup;
+    if(!cleanup?.removed&&!cleanup?.warnings)return '';
+    const parts=[];
+    if(cleanup.removed)parts.push(`已清理 ${cleanup.removed} 份超期导入暂存`);
+    if(cleanup.warnings)parts.push(`${cleanup.warnings} 项暂存需检查`);
+    return `<p class="desktop-notice staging-cleanup" role="status">${esc(parts.join('。'))}。</p>`;
+  }
+  function materialRow(material, disabled){
+    const title=esc(readable(material.fileName));
+    const format=esc(formatNames.get(material.formatKey)||'未识别');
+    const formatHint=material.formatKey?`格式标识 ${material.formatKey}`:'';
+    const latestError=material.latestErrorCode?`最近尝试：${esc(material.latestErrorCode)}`:'仅当前已发布批次可查';
+    const counts=`${esc(material.importedRows??'—')} / ${esc(material.pendingRows??'—')}`;
+    const diagnostics=material.diagnosticRows==null?'':`<div class="cell-note">附加诊断涉及 ${esc(material.diagnosticRows)} 条</div>`;
+    const attrs=`data-id="${esc(material.id)}" ${disabled}`;
+    let action='';
+    if(material.currentBatchId)action=btn('查看流水','material-flows','table','small',attrs);
+    else if(material.canRetry&&typeof desktopBridge.retryImport==='function')action=btn('重试导入','desktop-retry-import','refresh','small',attrs);
+    return `<tr><td><div class="cell-title">${title}</div><div class="cell-note num" title="${esc(material.sha256)}">SHA256 ${esc(material.sha256?.slice(0,16)||'—')}…</div></td><td title="${esc(formatHint)}">${format}<div class="cell-note">${esc(material.encoding||'—')}</div></td><td>${esc(material.batchStatus||material.status)}<div class="cell-note">${latestError}</div></td><td class="num">${counts}${diagnostics}</td><td>${action}</td></tr>`;
+  }
+  function ledgerRow(row, disabled){
+    const reasons=row.pendingReasons.map(reason=>reason.detail).join('；');
+    return `<tr><td class="num">${esc(row.txn_time||'时间待核')}<div class="cell-note">${esc(readable(row.source_file_name))} · ${esc(row.source_loc)}</div>${btn('查看原文','desktop-source','external','small ledger-source-button',`data-id="${esc(row.id)}" ${disabled}`)}</td><td>${status(row.status)}<div class="cell-note" title="${esc(reasons)}">${esc(reasons)}</div></td><td><div class="cell-title">${esc(readable(row.acct_no||'身份待核'))}</div><div class="cell-note">${esc(readable(row.peer_name||row.peer_acct||row.summary||'—'))}</div></td><td class="num">${esc(readable(row.raw_amount_text??'（空）'))} ${esc(rawUnit(row))}<div class="cell-note">${esc(row.raw_direction||'未知方向')}</div></td><td class="num">${exactMoney(row.amount)}<div class="cell-note">${esc(row.currency||'币种未覆盖，不计算')}</div></td></tr>`;
+  }
   function desktopDataPage(){
     const disabled=desktop.busy||live.loading?'disabled':'';
     const notice=live.error?`<div class="desktop-data-error" role="alert">${esc(live.error)} ${btn('刷新列表','refresh-data','refresh','small',disabled)}</div>`:'';
-    if(state.route==='materials')return previewNote()+receiptView()+notice+`<section class="panel desktop-materials"><div class="desktop-materials-head"><div class="spread"><p class="feature-status">真实导入技术预览</p>${btn('选择原始材料','desktop-import','upload','primary',disabled)}</div><p>支持指定支付宝账户 CSV、微信 27 列 TXT、建行 32 列 XLSX。按来源坐标保留每一行。</p></div><div class="table-scroll"><table class="data-table"><thead><tr><th>材料 / 原件身份</th><th>格式</th><th>当前批次</th><th>写入 / 待核</th><th></th></tr></thead><tbody>${live.materials.map(m=>`<tr><td><div class="cell-title">${esc(readable(m.fileName))}</div><div class="cell-note num" title="${esc(m.sha256)}">SHA256 ${esc(m.sha256?.slice(0,16)||'—')}…</div></td><td>${esc(m.formatKey||'未识别')}<div class="cell-note">${esc(m.encoding||'—')}</div></td><td>${esc(m.batchStatus||m.status)}<div class="cell-note">${m.latestErrorCode?'最近尝试：'+esc(m.latestErrorCode):'仅当前已发布批次可查'}</div></td><td class="num">${esc(m.importedRows??'—')} / ${esc(m.pendingRows??'—')}</td><td>${m.currentBatchId?btn('查看流水','material-flows','table','small',`data-id="${esc(m.id)}" ${disabled}`):''}</td></tr>`).join('')}</tbody></table>${live.loading?empty('正在读取材料','请等待本地数据返回。'):live.materials.length?'':empty('还没有已导入材料','点击“选择原始材料”，选择一个受支持模板的文件。')}</div><p class="field-note">请保留原件，不删行或改表头。同一原件重复导入会被拒绝；未知模板明确报错。</p><div class="desktop-saved">${ico('checkCircle',15)}${copy.case.savedNote}</div></section>`;
+    if(state.route==='materials')return previewNote()+stagingCleanupView()+receiptView()+notice+`<section class="panel desktop-materials"><div class="desktop-materials-head"><div class="spread"><p class="feature-status">真实导入技术预览</p>${btn('选择原始材料','desktop-import','upload','primary',disabled)}</div><p>支持指定支付宝账户 CSV、微信 27 列 TXT、建行 32 列 XLSX。按来源坐标保留每一行。</p></div><div class="table-scroll"><table class="data-table"><thead><tr><th>材料 / 原件身份</th><th>格式</th><th>当前批次</th><th>写入 / 待核</th><th scope="col">操作</th></tr></thead><tbody>${live.materials.map(material=>materialRow(material,disabled)).join('')}</tbody></table>${live.loading?empty('正在读取材料','请等待本地数据返回。'):live.materials.length?'':empty('还没有已导入材料','点击“选择原始材料”，选择一个受支持模板的文件。')}</div><p class="field-note">请保留原件，不删行或改表头。同一原件重复导入会被拒绝；未知模板明确报错。</p><div class="desktop-saved">${ico('checkCircle',15)}${copy.case.savedNote}</div></section>`;
     const page=live.page,rows=page?.rows||[],review=state.route==='review';
-    return previewNote()+notice+`<section class="panel desktop-flows"><div class="table-tools"><span>${review?'待核只读清单':'当前已发布流水'}</span><select id="desktop-source" class="select" aria-label="按来源材料筛选"><option value="">全部材料</option>${live.materials.filter(m=>m.currentBatchId).map(m=>`<option value="${esc(m.id)}" ${live.source===m.id?'selected':''}>${esc(readable(m.fileName))}</option>`).join('')}</select>${review?'':`<select id="desktop-status" class="select" aria-label="按记录状态筛选">${[['all','全部状态'],['confirmed','已确认'],['pending','待核']].map(([v,t])=>`<option value="${v}" ${live.filter===v?'selected':''}>${t}</option>`).join('')}</select>`}<span class="push"></span>${btn('关联候选','desktop-relations','link','small',disabled)}${btn('刷新列表','refresh-data','refresh','small',disabled)}</div><div class="table-scroll"><table class="data-table desktop-ledger"><thead><tr><th>交易时间 / 来源</th><th>本方 / 交易对方</th><th>原始金额 / 方向</th><th>标准金额（元）</th><th>状态 / 待核原因</th><th></th></tr></thead><tbody>${rows.map(r=>`<tr><td class="num">${esc(r.txn_time||'时间待核')}<div class="cell-note">${esc(readable(r.source_file_name))} · ${esc(r.source_loc)}</div></td><td><div class="cell-title">${esc(readable(r.acct_no||'身份待核'))}</div><div class="cell-note">${esc(readable(r.peer_name||r.peer_acct||r.summary||'—'))}</div></td><td class="num">${esc(readable(r.raw_amount_text??'（空）'))} ${esc(rawUnit(r))}<div class="cell-note">${esc(r.raw_direction||'未知方向')}</div></td><td class="num">${exactMoney(r.amount)}<div class="cell-note">${esc(r.currency||'币种未覆盖，不计算')}</div></td><td>${status(r.status)}<div class="cell-note">${esc(r.pendingReasons.map(p=>p.detail).join('；'))}</div></td><td>${btn('查看原文','desktop-source','external','small',`data-id="${esc(r.id)}" ${disabled}`)}</td></tr>`).join('')}</tbody></table>${live.loading?empty('正在读取流水','请等待本地数据返回。'):rows.length?'':empty(review?'暂无待核记录':'暂无已发布流水',live.error?'先处理上方错误，再刷新。':'可先在材料管理中导入受支持的原始材料。')}</div><div class="table-footer"><span>共 ${esc(page?.total??'—')} 条 · 第 ${live.history.length+1} 页 · 金额以整数分保存</span><span class="push"></span>${btn('上一页','desktop-prev',null,'small',!live.history.length||disabled?'disabled':'')}${btn('下一页','desktop-next',null,'small',!page?.nextCursor||disabled?'disabled':'')}</div></section><p class="quiet-note">${review?'待核原因保留原值与依据，本版没有保存或确认按钮。':'来源材料可能反映同一资金活动的不同视角，本版不自动去重或合计。'}</p>`;
+    return previewNote()+notice+`<section class="panel desktop-flows"><div class="table-tools"><span>${review?'待核只读清单':'当前已发布流水'}</span><select id="desktop-source" class="select" aria-label="按来源材料筛选"><option value="">全部材料</option>${live.materials.filter(m=>m.currentBatchId).map(m=>`<option value="${esc(m.id)}" ${live.source===m.id?'selected':''}>${esc(readable(m.fileName))}</option>`).join('')}</select>${review?'':`<select id="desktop-status" class="select" aria-label="按记录状态筛选">${[['all','全部状态'],['confirmed','已确认'],['pending','待核']].map(([v,t])=>`<option value="${v}" ${live.filter===v?'selected':''}>${t}</option>`).join('')}</select>`}<span class="push"></span>${btn('关联候选','desktop-relations','link','small',disabled)}${btn('刷新列表','refresh-data','refresh','small',disabled)}</div><div class="table-scroll"><table class="data-table desktop-ledger"><thead><tr><th>交易时间 / 来源原文</th><th>状态 / 待核原因</th><th>本方 / 交易对方</th><th>原始金额 / 方向</th><th>标准金额（元）</th></tr></thead><tbody>${rows.map(row=>ledgerRow(row,disabled)).join('')}</tbody></table>${live.loading?empty('正在读取流水','请等待本地数据返回。'):rows.length?'':empty(review?'暂无待核记录':'暂无已发布流水',live.error?'先处理上方错误，再刷新。':'可先在材料管理中导入受支持的原始材料。')}</div><div class="table-footer"><span>共 ${esc(page?.total??'—')} 条 · 第 ${live.history.length+1} 页 · 金额以整数分保存</span><span class="push"></span>${btn('上一页','desktop-prev',null,'small',!live.history.length||disabled?'disabled':'')}${btn('下一页','desktop-next',null,'small',!page?.nextCursor||disabled?'disabled':'')}</div></section><p class="quiet-note">${review?'待核原因保留原值与依据，本版没有保存或确认按钮。':'来源材料可能反映同一资金活动的不同视角，本版不自动去重或合计。'}</p>`;
   }
   async function loadDesktopPage(reset=false){
     if(!desktop||!['materials','flows','review'].includes(state.route)||!currentCase()||desktop.error)return;
@@ -159,11 +203,13 @@
     }catch(error){if(epoch===live.epoch){live.error=desktopError(error);live.page=null;}}
     finally{if(epoch===live.epoch){live.loading=false;render();}}
   }
-  async function desktopImport(){
+  async function desktopImport(sourceFileId){
     if(desktop.busy||live.loading||!currentCase())return;
+    const retry=sourceFileId!==undefined;
+    if(retry&&!live.materials.some(material=>material.id===sourceFileId&&material.canRetry&&!material.currentBatchId))return;
     const caseId=state.caseId;desktop.busy=true;live.error='';live.receipt=null;render();
     try{
-      const result=await desktopCall('chooseImport',caseId);
+      const result=retry?await desktopCall('retryImport',caseId,sourceFileId):await desktopCall('chooseImport',caseId);
       if(result.cancelled){toast('已取消选择，未导入材料。');return;}
       live.receipt=result.receipt;live.materials=result.materials.materials;upsertDesktopCase(result.case);
       toast('导入已发布，可查看流水和待核原因。');
@@ -173,13 +219,64 @@
     }
     finally{desktop.busy=false;render();}
   }
+  function desktopExportPage(){
+    const receipt=live.workpaper;
+    const error=live.exportError?`<p class="desktop-data-error" role="alert">${esc(live.exportError)}</p>`:'';
+    const saved=receipt?`<section class="panel workpaper-receipt" role="status" data-version="${esc(receipt.dataVersion)}"><div class="panel-head"><h2>底稿已保存</h2><span class="secondary num">数据版本 ${esc(receipt.dataVersion)}</span></div><div class="workpaper-receipt-body"><p class="workpaper-file">${esc(receipt.filePath)}</p><dl class="workpaper-counts">${[['总行数',receipt.totalRows],['已确认',receipt.confirmedRows],['待核',receipt.pendingRows],['金额未知',receipt.unknownAmountRows]].map(([label,value])=>`<div><dt>${label}</dt><dd class="num">${esc(value)}</dd></div>`).join('')}</dl></div></section>`:'';
+    return `<section class="panel workpaper-panel" aria-busy="${live.exporting}"><div class="panel-head"><h2>Excel 核对底稿</h2><span class="secondary">.xlsx</span></div><div class="workpaper-body"><p>导出本案件当前有效流水。表中并列展示原文、标准值、待核原因和来源位置，说明页记录底稿格式、数据版本和各平台行数。</p><p class="quiet-note">请保存到可写的本地 NTFS 文件夹，例如本机的文档文件夹。底稿为规则结果，在 Excel 中修改底稿不计为复核。</p>${btn(live.exporting?'正在导出…':'导出 Excel 底稿','desktop-export-workpaper','download','primary',desktop.busy?'disabled':'')}</div></section>${error}${saved}`;
+  }
+  async function desktopExport(){
+    if(desktop.busy||state.route!=='exports'||!currentCase()||typeof desktopBridge.exportWorkpaper!=='function')return;
+    const caseId=state.caseId;
+    desktop.busy=true;
+    live.exporting=true;
+    live.workpaper=null;
+    live.exportError='';
+    render();
+    try{
+      const result=await desktopCall('exportWorkpaper',caseId);
+      if(result.cancelled){
+        toast('已取消导出。');
+        return;
+      }
+      live.workpaper=result;
+    }catch(error){
+      live.exportError=desktopError(error);
+    }finally{
+      desktop.busy=false;
+      live.exporting=false;
+      render();
+      $('[data-action="desktop-export-workpaper"]')?.focus({preventScroll:true});
+    }
+  }
+  function sourceMoneyExplanation(source){
+    const money=source.savedDerivation?.money;
+    const row=source.standard;
+    const unit=money?.source_unit;
+    if(unit!=='元'&&unit!=='分')return '';
+    const parts=[unit==='元'?'原始单位为元，软件换算成整数分保存。':'原始单位为分，直接按整数分保存。'];
+    if(money.rounding?.some(item=>item.field==='raw_amount_text'&&item.rounded)){
+      const original=readable(row.raw_amount_text);
+      const display=exactMoney(row.amount).replace(/^[+-]/,'');
+      const rounded=display==='—'?'':` → ${display} 元（绝对值）`;
+      parts.push(`四舍五入到分：${original} ${unit}${rounded}。`);
+    }
+    if(row.amount!=null&&row.direction){
+      const direction=readable(row.raw_direction||'原始记录');
+      const signed=row.direction==='出'?'支出记负数':'收入记正数';
+      parts.push(`方向依据：${direction} → ${row.direction}，${signed}。`);
+    }else if(row.amount==null){
+      parts.push('标准金额待核。');
+    }
+    return `<div class="source-money-explanation">${parts.map(part=>`<p>${esc(part)}</p>`).join('')}</div>`;
+  }
   async function desktopSource(id){
     if(desktop.busy||live.loading||!live.page)return;
     desktop.busy=true;render();
     try{
       const source=await desktopCall('readFlowSource',state.caseId,{flowId:id,dataVersion:live.page.dataVersion});
       const r=source.standard,entries=source.fieldEntries||Object.entries(source.fields).map(([header,value],i)=>({column:i+1,header,value}));
-      modal('原始记录 · 只读',`<p class="preview-note">归档原件已核验。格式控制字符显示为转义文本；原始字节与字段保留。</p><p>${esc(readable(source.fileName))} · ${esc(source.sourceLoc)}</p><div class="cell-note num source-hash">SHA256 ${esc(source.sourceSha256)}</div><div class="source-standard">标准金额：${exactMoney(r.amount)} 元 · ${esc(r.currency||'币种未知')} · ${status(r.status)}<br>${esc(r.pendingReasons.map(p=>p.detail).join('；')||'没有未解决待核原因')}</div><table class="data-table raw-evidence"><thead><tr><th>列 / 字段</th><th>原始值</th></tr></thead><tbody>${entries.map(e=>`<tr><td>${esc(e.column)} · ${esc(e.header)}</td><td>${esc(readable(e.value))}</td></tr>`).join('')}</tbody></table><details><summary>保存时的处理依据</summary><pre class="derivation-json">${esc(JSON.stringify(source.savedDerivation,null,2))}</pre></details>`,btn('关闭','close-modal'),true);
+      modal('原始记录 · 只读',`<p class="preview-note">归档原件已核验。格式控制字符显示为转义文本；原始字节与字段保留。</p><p>${esc(readable(source.fileName))} · ${esc(source.sourceLoc)}</p><div class="cell-note num source-hash">SHA256 ${esc(source.sourceSha256)}</div><div class="source-standard">标准金额：${exactMoney(r.amount)} 元 · ${esc(r.currency||'币种未知')} · ${status(r.status)}<br>${esc(r.pendingReasons.map(p=>p.detail).join('；')||'没有未解决待核原因')}${sourceMoneyExplanation(source)}</div><table class="data-table raw-evidence"><thead><tr><th>列 / 字段</th><th>原始值</th></tr></thead><tbody>${entries.map(e=>`<tr><td>${esc(e.column)} · ${esc(e.header)}</td><td>${esc(readable(e.value))}</td></tr>`).join('')}</tbody></table><details><summary>保存时的处理依据</summary><pre class="derivation-json">${esc(JSON.stringify(source.savedDerivation,null,2))}</pre></details>`,btn('关闭','close-modal'),true);
     }catch(error){live.error=desktopError(error);toast(live.error);}
     finally{desktop.busy=false;render();}
   }
@@ -229,7 +326,8 @@
     data.cases=value.cases.map(normalizeDesktopCase);data.files=[];data.flows=[];data.exports=[];
     state.caseId=data.cases.some(c=>c.id===value.currentCaseId&&c.available!==false)?value.currentCaseId:null;
     state.route='home';resetFlowFilters();state.inspected=null;
-    Object.assign(live,{materials:[],page:null,cursor:null,history:[],source:'',receipt:null,error:'',loading:false});live.epoch++;
+    Object.assign(live,{materials:[],page:null,cursor:null,history:[],source:'',receipt:null,error:'',loading:false,
+      workpaper:null,exportError:'',cleanup:value.stagingCleanup??null});live.epoch++;
   }
   async function loadDesktop(choose=false){
     if(desktop.busy||desktop.saving||choose&&!desktop.needsWorkspace)return;
@@ -272,6 +370,7 @@
       const value=await desktopCall('openCase',id);
       if(!value?.id||value.id!==id||value.available===false)throw new Error(value?.error?desktopError(value.error):'案件数据库暂不可读。');
       upsertDesktopCase(value);closeModal();navigate('materials',value.id);
+      live.cleanup=value.stagingCleanup??null;
     }catch(error){
       const c=data.cases.find(row=>row.id===id);if(c){c.available=false;c.error=desktopError(error);c.stats=null;}
       desktop.notice=desktopError(error);closeModal();navigate('home');
@@ -484,7 +583,8 @@
       'continue':()=>currentCase()&&openDesktopCase(state.caseId),
       'close-modal':()=>{if(canCloseModal())closeModal();},
       'global-search':globalSearch,'help':desktopHelp,
-      'desktop-import':desktopImport,'refresh-data':()=>loadDesktopPage(true),
+      'desktop-import':()=>desktopImport(),'desktop-retry-import':el=>desktopImport(el.dataset.id),
+      'desktop-export-workpaper':desktopExport,'refresh-data':()=>loadDesktopPage(true),
       'material-flows':el=>{live.source=el.dataset.id;navigate('flows');},
       'desktop-source':el=>desktopSource(el.dataset.id),
       'desktop-relations':desktopRelations,

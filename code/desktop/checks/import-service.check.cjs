@@ -5,7 +5,8 @@ const fs=require('node:fs');
 const os=require('node:os');
 const path=require('node:path');
 const {WorkspaceStore}=require('../storage.cjs');
-const {importAlipayAccount,readFlowSource,recoverInterruptedImports,PARSER_VERSION}=require('../import-service.cjs');
+const {importAlipayAccount,retryFailedImport,readFlowSource,recoverInterruptedImports,PARSER_VERSION}=require('../import-service.cjs');
+const {ArchiveStore}=require('../archive-store.cjs');
 const {HEADERS,FORMAT_KEY}=require('../alipay-account.cjs');
 const {queryFlowPage}=require('../flow-query.cjs');
 const schemaPath=path.resolve(__dirname,'../../ddl_extract_check.sql');
@@ -96,6 +97,8 @@ test('重新导入取消保留旧current，已写块未发布，failed回执及�
   assert.equal(failed.status,'failed');assert.equal(failed.imported_rows,250);assert.equal(failed.cancelled_rows,251);
   assert.equal(failed.error_code,'FS_USER_CANCELLED');assert.equal(failed.cancel_reason,'用户取消');
   assert.equal(queryFlowPage(f.db,{caseId:f.record.id}).total,'501');
+  await assert.rejects(()=>retryFailedImport({...f.options,sourceFileId:String(first.sourceFileId)}),{code:'FS_IMPORT_RETRY_STATE'});
+  assert.equal(f.db.prepare('SELECT count(*) n FROM import_batch').get().n,2);
   assert.throws(()=>f.db.exec("UPDATE import_batch SET notes='rewrite' WHERE id="+failed.id));
 });
 
@@ -107,6 +110,33 @@ test('结构错误记录failed及错误码，不发布空成功；有效旧材�
   assert.equal(bad.status,'failed');assert.equal(bad.error_code,'FS_FORMAT_UNSUPPORTED');assert.equal(bad.imported_rows,0);
   assert.equal(queryFlowPage(f.db,{caseId:f.record.id}).total,'1');
   assert.equal(f.db.prepare('SELECT current_batch_id FROM source_file WHERE id=?').get(bad.source_file_id).current_batch_id,null);
+  await assert.rejects(()=>retryFailedImport({...f.options,sourceFileId:String(bad.source_file_id)}),
+    error=>error.code==='FS_FORMAT_UNSUPPORTED' && error.receipt.sourceFileId===bad.source_file_id && error.receipt.batchId!==bad.id);
+  assert.equal(f.db.prepare('SELECT count(*) n FROM import_batch WHERE source_file_id=?').get(bad.source_file_id).n,2);
+  assert.equal(queryFlowPage(f.db,{caseId:f.record.id}).total,'1');
+});
+
+test('首批临时失败后从同一归档及冻结规则显式重试，保留失败历史和正向归档引用',async t=>{
+  const f=await fixture(t),controller=new AbortController();
+  let first;
+  await assert.rejects(()=>importAlipayAccount({...f.options,signal:controller.signal,
+    onProgress:event=>{if(event.phase==='parsing')controller.abort();}}),error=>{
+    first=error.receipt;
+    return error.code==='FS_USER_CANCELLED' && first.batchId===1;
+  });
+  const before=f.db.prepare('SELECT notes,archive_entry_id,status FROM import_batch WHERE id=?').get(first.batchId);
+  const journals=fs.readdirSync(path.join(f.caseDirectory,'archive/.journal'));
+  fs.unlinkSync(f.filePath);
+  const retry=await retryFailedImport({...f.options,sourceFileId:String(first.sourceFileId)});
+  assert.equal(retry.sourceFileId,first.sourceFileId);
+  assert.equal(retry.importedRows,1);
+  assert.deepEqual(f.db.prepare('SELECT notes,archive_entry_id,status FROM import_batch WHERE id=?').get(first.batchId),before);
+  const published=f.db.prepare('SELECT notes,archive_entry_id,status FROM import_batch WHERE id=?').get(retry.batchId);
+  assert.deepEqual(published,{...before,status:'done'});
+  assert.deepEqual(fs.readdirSync(path.join(f.caseDirectory,'archive/.journal')),journals);
+  assert.equal(queryFlowPage(f.db,{caseId:f.record.id}).total,'1');
+  await assert.rejects(()=>retryFailedImport({...f.options,sourceFileId:String(first.sourceFileId)}),{code:'FS_IMPORT_RETRY_STATE'});
+  assert.equal(f.db.prepare('SELECT count(*) n FROM import_batch').get().n,2);
 });
 
 test('规则版本冲突拒绝复写；新版本重新导入仍保持旧配置与批次policy快照',async t=>{
@@ -186,8 +216,48 @@ test('重开后原文和生成时解释仍可回源，source旧大小为空使�
 test('空案恢复无归档journal时不新增文件夹',async t=>{
   const f=await fixture(t);const initial=fs.readdirSync(path.join(f.caseDirectory,'archive'));
   const result=recoverInterruptedImports(f.options);
-  assert.deepEqual(result,{recovered:[],diagnostics:[],archive:[]});
+  assert.deepEqual(result,{recovered:[],diagnostics:[],archive:[],stagingCleanup:{removed:0,warnings:0}});
   assert.deepEqual(fs.readdirSync(path.join(f.caseDirectory,'archive')),initial);
+});
+
+test('打开案件只清超期且无引用的有效暂存，保留失效日志及材料归档',async t=>{
+  const f=await fixture(t);
+  const imported=await importAlipayAccount(f.options);
+  const archive=new ArchiveStore(f.caseDirectory);
+  const linked=archive.inspectRecovery()[0];
+  const eligible=await archive.stage(f.filePath);
+  const recent=await archive.stage(f.filePath);
+  const damaged=await archive.stage(f.filePath);
+  const active=await archive.stage(f.filePath);
+  const journal=entry=>path.join(f.caseDirectory,'archive/.journal',entry.taskId+'.json');
+  const staging=entry=>path.join(f.caseDirectory,entry.stagingRelativePath);
+  for (const entry of [linked,eligible,recent,damaged,active]) {
+    const saved=JSON.parse(fs.readFileSync(journal(entry),'utf8'));
+    fs.writeFileSync(staging(entry),'合成未完成暂存');
+    fs.writeFileSync(journal(entry),JSON.stringify({...saved,state:'failed',
+      createdAt:entry===recent?new Date().toISOString():'2020-01-01T00:00:00.000Z'}));
+  }
+  fs.writeFileSync(journal(damaged),'{"broken":');
+  fs.writeFileSync(journal(eligible)+'.new','合成中断日志');
+  const {runCaseTransaction}=require('../hardening.cjs');
+  runCaseTransaction(f.db,f.record,{sourceFileIds:[imported.sourceFileId]},()=>{
+    f.db.prepare(`INSERT INTO import_batch(case_id,source_file_id,started_at,parser_version,status,notes)
+      VALUES(1,?,'t','legacy-demo','pending',?)`).run(imported.sourceFileId,JSON.stringify({archiveTaskId:active.taskId}));
+  });
+  await f.store.listCases();
+  assert.ok(fs.existsSync(staging(eligible)));
+  const before=f.db.prepare('SELECT data_version FROM case_data_state').get().data_version;
+  const opened=await f.store.openCase(f.record.id);
+  assert.deepEqual(opened.stagingCleanup,{removed:1,warnings:1});
+  assert.equal(fs.existsSync(staging(eligible)),false);
+  assert.equal(fs.existsSync(journal(eligible)+'.new'),false);
+  assert.equal(JSON.parse(fs.readFileSync(journal(eligible),'utf8')).state,'staging_cleaned');
+  assert.ok([linked,recent,damaged,active].every(entry=>fs.existsSync(staging(entry)) && fs.existsSync(journal(entry))));
+  assert.equal(fs.readFileSync(journal(damaged),'utf8'),'{"broken":');
+  assert.deepEqual(fs.readFileSync(path.join(f.caseDirectory,linked.finalRelativePath)),fs.readFileSync(f.filePath));
+  assert.equal(f.store.caseDb.prepare('SELECT current_batch_id FROM source_file').get().current_batch_id,imported.batchId);
+  assert.equal(f.store.caseDb.prepare('SELECT data_version FROM case_data_state').get().data_version,before);
+  assert.deepEqual((await f.store.openCase(f.record.id)).stagingCleanup,{removed:0,warnings:1});
 });
 
 test('重导新版规则中断按批次固定规则恢复250已写与0行批次，不依赖source旧规则指针',async t=>{

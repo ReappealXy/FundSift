@@ -67,10 +67,13 @@ class DesktopData {
         s.data_rows AS observedRows,s.coverage_complete AS coverageComplete,s.current_batch_id AS currentBatchId,
         b.status AS batchStatus,b.imported_rows AS importedRows,b.pending_rows AS pendingRows,
         b.unquantifiable_rows AS unquantifiableRows,b.parser_version AS parserVersion,b.finished_at AS importedAt,
-        latest.id AS latestBatchId,latest.status AS latestBatchStatus,latest.error_code AS latestErrorCode
+        latest.id AS latestBatchId,latest.status AS latestBatchStatus,latest.error_code AS latestErrorCode,
+        (s.status='failed' AND s.current_batch_id IS NULL AND latest.status='failed' AND latest.archive_entry_id IS NOT NULL) AS canRetry,
+        (SELECT count(*) FROM fund_flow f WHERE f.case_id=s.case_id AND f.source_file_id=s.id AND f.batch_id=b.id
+          AND CASE WHEN json_valid(f.raw_record) THEN coalesce(json_array_length(f.raw_record,'$.derivation.supplementary_diagnostics'),0)>0 ELSE 0 END) AS diagnosticRows
         FROM source_file s LEFT JOIN import_batch b ON b.id=s.current_batch_id AND b.source_file_id=s.id AND b.status='done'
         LEFT JOIN import_batch latest ON latest.id=(SELECT max(id) FROM import_batch WHERE source_file_id=s.id)
-        WHERE s.case_id=1 ORDER BY s.id`).safeIntegers().all().map(wire);
+        WHERE s.case_id=1 ORDER BY s.id`).safeIntegers().all().map(row => ({ ...wire(row), canRetry: row.canRetry === 1n }));
       return { caseId, dataVersion: state.data_version.toString(), materials };
     });
   }
@@ -96,6 +99,23 @@ class DesktopData {
     const receipt = await importSourceFile({ ...context, filePath: input.filePath, rule: approvedRule(formatKey),
       policy: approvedPolicy(formatKey, input.confirmedAt), onProgress: event => this.onProgress(event) });
     return { receipt, materials: this.listMaterials(caseId), case: this.store._dto(context.record, context.db) };
+  }
+  async retryImport(caseId, sourceFileId) {
+    const context = this.context(caseId);
+    if (typeof sourceFileId !== 'string' || !/^[1-9]\d{0,18}$/.test(sourceFileId)) {
+      fail('FS_IMPORT_INPUT', '请选择一份导入失败的材料。');
+    }
+    const { retryFailedImport } = require('./import-service.cjs');
+    const receipt = await retryFailedImport({ ...context, sourceFileId, onProgress: event => this.onProgress(event) });
+    return { receipt, materials: this.listMaterials(caseId), case: this.store._dto(context.record, context.db) };
+  }
+  getWorkpaperContext(caseId) {
+    const { getWorkpaperContext } = require('./workpaper.cjs');
+    return getWorkpaperContext(this.context(caseId));
+  }
+  exportWorkpaper(caseId, filePath, expectedDataVersion) {
+    const { exportWorkpaper } = require('./workpaper.cjs');
+    return exportWorkpaper({ ...this.context(caseId), filePath, expectedDataVersion, onProgress: event => this.onProgress(event) });
   }
   async readFlowSource(caseId, input) {
     const context = this.context(caseId);

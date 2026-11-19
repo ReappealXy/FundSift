@@ -349,9 +349,7 @@ function validateFoundationData(db) {
     [`SELECT s.id FROM source_file s LEFT JOIN archive_entry a ON a.id=s.archive_entry_id
       WHERE s.archive_entry_id IS NOT NULL AND (a.id IS NULL OR a.status<>'verified' OR a.expected_sha256<>s.file_sha256) LIMIT 1`, '材料归档引用不一致'],
     [`SELECT b.id FROM import_batch b JOIN source_file s ON s.id=b.source_file_id LEFT JOIN archive_entry a ON a.id=b.archive_entry_id
-      WHERE b.archive_entry_id IS NOT NULL AND (a.id IS NULL OR a.status<>'verified' OR a.expected_sha256<>s.file_sha256) LIMIT 1`, '历史批次归档引用不一致'],
-    [`SELECT a.id FROM archive_entry a LEFT JOIN import_batch b ON b.id=a.batch_id LEFT JOIN source_file s ON s.id=b.source_file_id
-      WHERE a.batch_id IS NOT NULL AND (b.id IS NULL OR s.id IS NULL OR s.file_sha256<>a.expected_sha256) LIMIT 1`, '归档登记批次不一致']
+      WHERE b.archive_entry_id IS NOT NULL AND (a.id IS NULL OR a.status<>'verified' OR a.expected_sha256<>s.file_sha256) LIMIT 1`, '历史批次归档引用不一致']
   ];
   for (const [sql,message] of checks) if (db.prepare(sql).get()) fail('FS_CASE_DATA',message+'，已停止操作。');
   return true;

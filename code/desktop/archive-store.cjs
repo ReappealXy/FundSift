@@ -134,40 +134,53 @@ class ArchiveStore {
         error.name === 'AbortError' ? '已取消归档，未发布导入结果。' : '归档未完成，请检查原件、权限和剩余空间。');
     } finally { this.active.delete(taskId); }
   }
+  _inspectJournal(taskId) {
+    const file = this._path(`archive/.journal/${taskId}.json`);
+    if (fs.statSync(file).size > 65536) throw fail('FS_ARCHIVE_JOURNAL', '归档恢复记录过大。');
+    const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (record.version !== 1 || record.taskId !== taskId || !SHA.test(record.expectedSha256) ||
+        !Number.isFinite(Date.parse(record.createdAt)) ||
+        !['copying','verified','ready','failed','staging_cleaned'].includes(record.state) ||
+        record.stagingRelativePath !== `archive/.staging/${record.taskId}.tmp` ||
+        record.finalRelativePath !== `archive/objects/${record.expectedSha256}.bin`) {
+      throw fail('FS_ARCHIVE_JOURNAL', '归档恢复记录身份无效。');
+    }
+    let interruptedJournal=false;
+    try {
+      const stat=fs.lstatSync(file + '.new');
+      if (!stat.isFile() || stat.isSymbolicLink()) throw fail('FS_ARCHIVE_PATH', '归档日志临时位置异常。');
+      interruptedJournal=true;
+    } catch (error) { if (error.code!=='ENOENT') throw error; }
+    return { ...record, active: this.active.has(record.taskId), interruptedJournal,
+      stagingExists: fs.existsSync(this._path(record.stagingRelativePath)),
+      finalExists: fs.existsSync(this._path(record.finalRelativePath)) };
+  }
   inspectRecovery() {
     const results = [];
     for (const name of fs.readdirSync(path.join(this.root, 'archive/.journal'))) {
       if (!name.endsWith('.json') || !ID.test(name.slice(0, -5))) continue;
-      try {
-        const file = this._path(`archive/.journal/${name}`);
-        if (fs.statSync(file).size > 65536) throw new Error('size');
-        const record = JSON.parse(fs.readFileSync(file, 'utf8'));
-        if (record.version !== 1 || record.taskId !== name.slice(0, -5) || !SHA.test(record.expectedSha256) ||
-            record.stagingRelativePath !== `archive/.staging/${record.taskId}.tmp` ||
-            record.finalRelativePath !== `archive/objects/${record.expectedSha256}.bin`) throw new Error('identity');
-        results.push({ ...record, active: this.active.has(record.taskId),
-          interruptedJournal: fs.existsSync(file + '.new'),
-          stagingExists: fs.existsSync(this._path(record.stagingRelativePath)),
-          finalExists: fs.existsSync(this._path(record.finalRelativePath)) });
-      } catch (_) { results.push({ journal: name, state: 'invalid', requiresReview: true }); }
+      try { results.push(this._inspectJournal(name.slice(0, -5))); }
+      catch (_) { results.push({ journal: name, state: 'invalid', requiresReview: true }); }
     }
     return results;
   }
   // Caller supplies a synchronous database reference check and serializes this
   // with imports. Final objects are always retained; cleanup is staging-only.
   cleanupStaging(taskId, { isReferenced, graceMs = 86400000, now = Date.now() } = {}) {
-    if (!ID.test(taskId) || typeof isReferenced !== 'function' || !Number.isSafeInteger(graceMs) || graceMs < 0) {
+    if (!ID.test(taskId) || typeof isReferenced !== 'function' || !Number.isSafeInteger(graceMs) || graceMs < 0 ||
+        !Number.isFinite(new Date(now).getTime())) {
       throw fail('FS_ARCHIVE_INPUT', '清理参数无效。');
     }
-    const entry = this.inspectRecovery().find(item => item.taskId === taskId);
-    if (!entry || entry.state === 'invalid') throw fail('FS_ARCHIVE_JOURNAL', '归档恢复记录无效。');
+    let entry;
+    try { entry=this._inspectJournal(taskId); }
+    catch (_) { throw fail('FS_ARCHIVE_JOURNAL', '归档恢复记录无效。'); }
     if (this.active.size || isReferenced(entry) !== false) throw fail('FS_ARCHIVE_REFERENCED', '归档仍被引用或存在进行中的任务，不能清理。');
     if (now - Date.parse(entry.createdAt) < graceMs || !Number.isFinite(Date.parse(entry.createdAt))) {
       throw fail('FS_ARCHIVE_GRACE', '归档尚处保留期，暂不清理。');
     }
     if (entry.stagingExists) fs.unlinkSync(this._path(entry.stagingRelativePath));
     entry.state = 'staging_cleaned'; entry.cleanedAt = new Date(now).toISOString(); this._journal(entry);
-    return { taskId, stagingRemoved: entry.stagingExists, finalRetained: entry.finalExists };
+    return { taskId, stagingRemoved: entry.stagingExists, journalTemporaryRemoved: entry.interruptedJournal, finalRetained: entry.finalExists };
   }
 }
 

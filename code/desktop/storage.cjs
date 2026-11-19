@@ -343,7 +343,8 @@ class WorkspaceStore {
       this.currentCaseId = candidate.currentCaseId;
       this.importRecovery = candidate.importRecovery;
       nextCatalog = null;
-      return { workspacePath: this.workspacePath, cases, currentCaseId: this.currentCaseId };
+      return { workspacePath: this.workspacePath, cases, currentCaseId: this.currentCaseId,
+        ...(this.importRecovery ? { stagingCleanup: this.importRecovery.stagingCleanup } : {}) };
     } catch (error) {
       if (nextCatalog) nextCatalog.close();
       throw wrap(error, 'FS_WORKSPACE_OPEN', '数据存放文件夹无法打开，请检查位置、访问权限和剩余空间。');
@@ -535,7 +536,7 @@ class WorkspaceStore {
       this.caseDb = nextDb; nextDb = null;
       this.currentCaseId = id;
       this.importRecovery = importRecovery;
-      return { ...result, openedAt };
+      return { ...result, openedAt, stagingCleanup: importRecovery.stagingCleanup };
     } catch (error) {
       if (nextDb) nextDb.close();
       throw wrap(error, 'FS_CASE_OPEN', '案件无法打开，原先案件保持不变。');

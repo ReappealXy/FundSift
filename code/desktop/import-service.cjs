@@ -21,6 +21,8 @@ const MAX_BYTES = 64 * 1024 * 1024;
 const CHUNK_SIZE = 250;
 const active = new WeakSet();
 const sha256 = value => createHash('sha256').update(value).digest('hex');
+const DIAGNOSTIC_ROW = `CASE WHEN json_valid(raw_record)
+  THEN coalesce(json_array_length(raw_record,'$.derivation.supplementary_diagnostics'),0)>0 ELSE 0 END`;
 const fail = (code,message) => { throw Object.assign(new Error(message),{code}); };
 const nonblank = value => typeof value==='string' && value.trim()!=='';
 const progress = (observer,event) => { try { observer?.(event); } catch (_) { /* A view observer cannot abort a committed chunk. */ } };
@@ -105,7 +107,8 @@ function archivePath(caseDirectory,relative,expected) {
   return target;
 }
 function registerArchive(db,record,staged) {
-  const existing=db.prepare('SELECT * FROM archive_entry WHERE final_relative_path=?').get(staged.finalRelativePath);
+  const existing=db.prepare(`SELECT id,status,expected_sha256,copied_sha256,size_bytes
+    FROM archive_entry WHERE final_relative_path=?`).get(staged.finalRelativePath);
   if(existing) {
     if(existing.status!=='verified' || existing.expected_sha256!==staged.expectedSha256 ||
       existing.copied_sha256!==staged.copiedSha256 || BigInt(existing.size_bytes)!==BigInt(staged.sizeBytes))fail('FS_ARCHIVE_HASH','已有归档账本与本次核验结果不一致。');
@@ -114,8 +117,8 @@ function registerArchive(db,record,staged) {
   let archiveId;
   runCaseIntegrityTransaction(db,record,()=>{
     archiveId=id(db,'archive_entry');
-    db.prepare(`INSERT INTO archive_entry(id,batch_id,staging_relative_path,final_relative_path,expected_sha256,copied_sha256,
-      size_bytes,status,created_at,verified_at) VALUES(?,NULL,?,?,?,?,?,'verified',?,?)`)
+    db.prepare(`INSERT INTO archive_entry(id,staging_relative_path,final_relative_path,expected_sha256,copied_sha256,
+      size_bytes,status,created_at,verified_at) VALUES(?,?,?,?,?,?,'verified',?,?)`)
       .run(archiveId,staged.stagingRelativePath,staged.finalRelativePath,staged.expectedSha256,staged.copiedSha256,
         BigInt(staged.sizeBytes),staged.createdAt,staged.verifiedAt);
   });
@@ -158,7 +161,8 @@ function rowForStorage(row,formatKey=FORMAT_KEY) {
   const result=Object.fromEntries(stringFields.map(key=>[key,row[key]??null]));
   return {...result,source_loc:row.source_loc,raw_record:rawRecord,amount,direction:row.direction??null,
     balance:row.balance==null?null:assertInt64(row.balance),reversal_flag:row.reversal_flag??0,currency:row.currency??null,
-    currency_evidence:currencyEvidence,status:normalized.length?'pending':'confirmed',reasons:normalized};
+    currency_evidence:currencyEvidence,status:normalized.length?'pending':'confirmed',reasons:normalized,
+    hasDiagnostics:Array.isArray(derivation.supplementary_diagnostics) && derivation.supplementary_diagnostics.length>0};
 }
 function writeChunk(db,record,sourceId,batchId,storedRule,rows) {
   runCaseTransaction(db,record,{sourceFileIds:[sourceId]},()=>{
@@ -178,29 +182,101 @@ function writeChunk(db,record,sourceId,batchId,storedRule,rows) {
   });
 }
 
-async function importSourceFile({db,record,caseDirectory,filePath,rule,policy,signal,onProgress,reimport=false}={}) {
+function batchRuleBinding(db,batch) {
+  let notes;
+  try { notes=JSON.parse(batch.notes); }
+  catch (_) { fail('FS_IMPORT_RETRY_RULE','失败批次的规则记录无法读取。'); }
+  if (!notes || notes.preview!==true || !Number.isSafeInteger(notes.rule_id) || !Number.isSafeInteger(notes.rule_version)) {
+    fail('FS_IMPORT_RETRY_RULE','失败批次缺少可以核验的规则记录。');
+  }
+  const stored=db.prepare(`SELECT r.id,r.platform,r.format_key,r.rule_version,r.frozen,r.source_evidence,
+    c.config_json,c.config_sha256,c.approved_by FROM format_rule r JOIN format_rule_config c
+    ON c.rule_id=r.id AND c.rule_version=r.rule_version WHERE r.id=? AND r.rule_version=?`)
+    .get(notes.rule_id,notes.rule_version);
+  if (!stored || !notes.policy || stored.frozen!==1 || !nonblank(stored.approved_by) ||
+      FORMATS[stored.format_key]?.version!==batch.parser_version || stored.config_sha256!==notes.config_sha256 ||
+      sha256(stored.config_json)!==notes.config_sha256 || sha256(canonicalJSON(notes.policy))!==notes.policy_sha256) {
+    fail('FS_IMPORT_RETRY_RULE','批次的解析版本、规则或批准依据无法核验。');
+  }
+  const {platform,format_key,rule_version,source_evidence}=stored;
+  const config=configFor({...JSON.parse(stored.config_json),platform,format_key,rule_version});
+  if (config.review.by!==stored.approved_by || sha256(canonicalJSON(config))!==notes.config_sha256) {
+    fail('FS_IMPORT_RETRY_RULE','规则版本的冻结配置或批准依据不一致。');
+  }
+  return {storedRule:stored,config,adapter:FORMATS[format_key],binding:{platform,format_key,rule_version,source_evidence},
+    approvedPolicy:policyFor(notes.policy,format_key),archiveTaskId:notes.archiveTaskId};
+}
+
+function failedRetrySource(db,sourceId) {
+  const source=db.prepare(`SELECT s.file_sha256,s.archive_entry_id,
+    b.id AS latest_batch_id,b.archive_entry_id AS batch_archive_entry_id,b.parser_version,b.notes,
+    a.expected_sha256,a.copied_sha256,a.size_bytes,a.final_relative_path,a.status AS archive_status
+    FROM source_file s JOIN import_batch b ON b.id=(SELECT max(id) FROM import_batch WHERE source_file_id=s.id)
+    AND b.case_id=s.case_id AND b.status='failed'
+    LEFT JOIN archive_entry a ON a.id=b.archive_entry_id
+    WHERE s.id=? AND s.case_id=1 AND s.status='failed' AND s.current_batch_id IS NULL
+    AND NOT EXISTS(SELECT 1 FROM import_batch active_batch WHERE active_batch.source_file_id=s.id
+      AND active_batch.status IN ('pending','parsing','importing'))`).safeIntegers().get(sourceId);
+  if (!source) fail('FS_IMPORT_RETRY_STATE','仅能重试没有有效结果且已终止的失败材料。');
+  if (source.archive_entry_id!==source.batch_archive_entry_id || source.archive_status!=='verified' ||
+      source.expected_sha256!==source.file_sha256 || source.copied_sha256!==source.file_sha256) {
+    fail('FS_ARCHIVE_HASH','失败材料的原件归档无法核验，请恢复对应归档副本。');
+  }
+  return source;
+}
+
+async function retryFailedImport({db,record,caseDirectory,sourceFileId,signal,onProgress}={}) {
+  let retrySourceId;
+  try { retrySourceId=assertInt64(sourceFileId); }
+  catch (_) { fail('FS_IMPORT_RETRY_STATE','请选择有效的失败材料。'); }
+  if (retrySourceId<1n || retrySourceId>BigInt(Number.MAX_SAFE_INTEGER)) fail('FS_IMPORT_RETRY_STATE','请选择有效的失败材料。');
+  return importSourceFile({db,record,caseDirectory,signal,onProgress,retrySourceId});
+}
+
+async function importSourceFile({db,record,caseDirectory,filePath,rule,policy,signal,onProgress,reimport=false,retrySourceId=null}={}) {
   assertCase(db,record);
   assertCaseDirectory(db,caseDirectory);
   if(active.has(db))fail('FS_IMPORT_BUSY','当前案件已有导入任务，请等待完成。');
-  const config=configFor(rule),approvedPolicy=policyFor(policy,rule.format_key),adapter=FORMATS[rule.format_key];
-  const binding={platform:rule.platform,format_key:rule.format_key,rule_version:rule.rule_version,source_evidence:rule.source_evidence??null};
-  if(typeof reimport!=='boolean'||typeof filePath!=='string')fail('FS_IMPORT_INPUT','导入参数无效。');
-  const inputStat=fs.lstatSync(filePath);
-  if(!inputStat.isFile()||inputStat.isSymbolicLink()||inputStat.size>MAX_BYTES)fail('FS_IMPORT_SIZE','技术预览仅支持不超过64MiB的普通文件。');
+  const isRetry=retrySourceId!==null;
+  let config,approvedPolicy,adapter,binding;
+  if (!isRetry) {
+    config=configFor(rule);
+    approvedPolicy=policyFor(policy,rule.format_key);
+    adapter=FORMATS[rule.format_key];
+    binding={platform:rule.platform,format_key:rule.format_key,rule_version:rule.rule_version,source_evidence:rule.source_evidence??null};
+    if(typeof reimport!=='boolean'||typeof filePath!=='string')fail('FS_IMPORT_INPUT','导入参数无效。');
+    const inputStat=fs.lstatSync(filePath);
+    if(!inputStat.isFile()||inputStat.isSymbolicLink()||inputStat.size>MAX_BYTES)fail('FS_IMPORT_SIZE','技术预览仅支持不超过64MiB的普通文件。');
+  }
   active.add(db);
-  let sourceId=null,batchId=null,metadata=null,written=0,pending=0,unquantifiable=0;
+  let sourceId=isRetry?Number(retrySourceId):null,batchId=null,metadata=null,written=0,pending=0,unquantifiable=0,diagnosticRows=0;
   try {
     cancelled(signal);
-    const archive=new ArchiveStore(caseDirectory);
-    const staged=await archive.stage(filePath,{signal,onProgress:event=>progress(onProgress,event)});
-    const found=db.prepare('SELECT * FROM source_file WHERE case_id=1 AND file_sha256=?').get(staged.expectedSha256);
-    if(found&&!reimport){sourceId=found.id;fail('FS_IMPORT_DUPLICATE','本案件已登记相同原件；如需重新解析，请明确选择重新导入。');}
-    const storedRule=registerRule(db,record,binding,config);
-    const archiveId=registerArchive(db,record,staged),timestamp=new Date().toISOString();
-    sourceId=found?.id??id(db,'source_file');batchId=id(db,'import_batch');
+    let found,storedRule,archiveId,staged;
+    if (isRetry) {
+      found=failedRetrySource(db,retrySourceId);
+      const previous=batchRuleBinding(db,found);
+      ({config,approvedPolicy,adapter,binding,storedRule}=previous);
+      archiveId=Number(found.batch_archive_entry_id);
+      staged={taskId:previous.archiveTaskId,finalRelativePath:found.final_relative_path,
+        expectedSha256:found.file_sha256,sizeBytes:found.size_bytes};
+    } else {
+      const archive=new ArchiveStore(caseDirectory);
+      staged=await archive.stage(filePath,{signal,onProgress:event=>progress(onProgress,event)});
+      found=db.prepare('SELECT id FROM source_file WHERE case_id=1 AND file_sha256=?').get(staged.expectedSha256);
+      if(found&&!reimport){sourceId=found.id;fail('FS_IMPORT_DUPLICATE','本案件已登记相同原件，未再次导入。失败材料可在材料管理重试。');}
+      storedRule=registerRule(db,record,binding,config);
+      archiveId=registerArchive(db,record,staged);
+      sourceId=found?.id??id(db,'source_file');
+    }
+    batchId=id(db,'import_batch');
+    const timestamp=new Date().toISOString();
     const notes=canonicalJSON({preview:true,policy:approvedPolicy,policy_sha256:sha256(canonicalJSON(approvedPolicy)),
       rule_id:storedRule.id,rule_version:storedRule.rule_version,config_sha256:sha256(canonicalJSON(config)),archiveTaskId:staged.taskId});
     runCaseTransaction(db,record,{sourceFileIds:[sourceId]},()=>{
+      if (isRetry && failedRetrySource(db,retrySourceId).latest_batch_id!==found.latest_batch_id) {
+        fail('FS_IMPORT_RETRY_STATE','原失败批次已变化，请刷新材料列表。');
+      }
       if(!found)db.prepare(`INSERT INTO source_file(id,case_id,file_name,file_path,file_size,file_sha256,format_rule_id,archive_entry_id,perspective)
         VALUES(?,1,?,?,?,?,?,?,'transaction')`).run(sourceId,path.basename(filePath),staged.finalRelativePath,BigInt(staged.sizeBytes),staged.expectedSha256,storedRule.id,archiveId);
       db.prepare(`INSERT INTO import_batch(id,case_id,source_file_id,started_at,parser_version,status,archive_entry_id,notes)
@@ -209,12 +285,17 @@ async function importSourceFile({db,record,caseDirectory,filePath,rule,policy,si
     });
     cancelled(signal);
     const openSource=require(adapter.module)[adapter.open];
-    const archived=archivePath(caseDirectory,staged.finalRelativePath,staged.expectedSha256);
+    let archived;
+    try { archived=archivePath(caseDirectory,staged.finalRelativePath,staged.expectedSha256); }
+    catch (error) {
+      if (isRetry && error.code==='ENOENT') fail('FS_ARCHIVE_HASH','失败材料的归档副本已失联，请恢复对应归档副本后重试。');
+      throw error;
+    }
     progress(onProgress,{phase:'parsing'});
     const parsed=await openSource(archived,{rule:{...config,id:storedRule.id,rule_version:storedRule.rule_version},
       policy:approvedPolicy,expectedSha256:staged.expectedSha256,signal,maxBytes:MAX_BYTES});
     metadata=parsed.metadata;
-    if(metadata.formatKey!==rule.format_key||metadata.sha256!==staged.expectedSha256||BigInt(metadata.sizeBytes)!==BigInt(staged.sizeBytes)||
+    if(metadata.formatKey!==binding.format_key||metadata.sha256!==staged.expectedSha256||BigInt(metadata.sizeBytes)!==BigInt(staged.sizeBytes)||
       !Number.isSafeInteger(metadata.dataRecordCount)||metadata.dataRecordCount<0)fail('FS_IMPORT_METADATA','解析材料身份或数据行数与归档不一致。');
     runCaseTransaction(db,record,{sourceFileIds:[sourceId]},()=>{
       db.prepare(`UPDATE source_file SET encoding_observed=?,format_observed=?,header_rows=?,data_rows=?,trailer_rows=?,unclassified_rows=0,
@@ -227,12 +308,12 @@ async function importSourceFile({db,record,caseDirectory,filePath,rule,policy,si
     const flush=()=>{
       if(!chunk.length)return;
       cancelled(signal);writeChunk(db,record,sourceId,batchId,storedRule,chunk);
-      for(const row of chunk){written++;if(row.status==='pending')pending++;if(row.amount===null)unquantifiable++;}
+      for(const row of chunk){written++;if(row.status==='pending')pending++;if(row.amount===null)unquantifiable++;if(row.hasDiagnostics)diagnosticRows++;}
       progress(onProgress,{phase:'importing',parsedRows:coordinates.size,writtenRows:written,pendingRows:pending,totalRows:metadata.dataRecordCount});
       chunk=[];
     };
     for await(const row of parsed.rows) {
-      cancelled(signal);const normalized=rowForStorage({...row,platform:binding.platform},rule.format_key);
+      cancelled(signal);const normalized=rowForStorage({...row,platform:binding.platform},binding.format_key);
       if(coordinates.has(normalized.source_loc))fail('FS_IMPORT_COORDINATE','解析结果出现重复来源坐标，未发布本次批次。');
       coordinates.add(normalized.source_loc);chunk.push(normalized);
       if(chunk.length>=CHUNK_SIZE)flush();
@@ -244,10 +325,15 @@ async function importSourceFile({db,record,caseDirectory,filePath,rule,policy,si
     cancelled(signal);
     progress(onProgress,{phase:'publishing'});
     runCaseTransaction(db,record,{sourceFileIds:[sourceId]},()=>{
+      if (isRetry && db.prepare('SELECT current_batch_id FROM source_file WHERE id=?').get(sourceId).current_batch_id!==null) {
+        fail('FS_IMPORT_RETRY_STATE','此材料已有有效结果，请刷新材料列表。');
+      }
       const counts=db.prepare(`SELECT count(*) AS total,count(DISTINCT source_loc) AS coordinates,
         sum(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,
-        sum(CASE WHEN amount IS NULL THEN 1 ELSE 0 END) AS unknown FROM fund_flow WHERE batch_id=?`).get(batchId);
-      if(counts.total!==written||counts.coordinates!==written||(counts.pending??0)!==pending||(counts.unknown??0)!==unquantifiable) {
+        sum(CASE WHEN amount IS NULL THEN 1 ELSE 0 END) AS unknown,
+        sum(${DIAGNOSTIC_ROW}) AS diagnostics FROM fund_flow WHERE batch_id=?`).get(batchId);
+      if(counts.total!==written||counts.coordinates!==written||(counts.pending??0)!==pending||
+        (counts.unknown??0)!==unquantifiable||(counts.diagnostics??0)!==diagnosticRows) {
         fail('FS_IMPORT_COUNT','发布前数据库行数复核不一致。');
       }
       db.prepare(`UPDATE import_batch SET status='done',finished_at=?,total_rows=?,imported_rows=?,skipped_rows=0,
@@ -258,7 +344,7 @@ async function importSourceFile({db,record,caseDirectory,filePath,rule,policy,si
     });
     progress(onProgress,{phase:'completed',writtenRows:written,pendingRows:pending,totalRows:written});
     return {state:'completed',preview:true,sourceFileId:sourceId,batchId,parserVersion:adapter.version,totalRows:written,
-      importedRows:written,skippedRows:0,pendingRows:pending,unquantifiableRows:unquantifiable,errorRows:0,cancelledRows:0};
+      importedRows:written,skippedRows:0,pendingRows:pending,unquantifiableRows:unquantifiable,diagnosticRows,errorRows:0,cancelledRows:0};
   } catch(error) {
     const code=signal?.aborted||error.name==='AbortError'?'FS_USER_CANCELLED':error.code?.startsWith('FS_')?error.code:'FS_IMPORT_FAILED';
     if(batchId!==null) {
@@ -273,9 +359,10 @@ async function importSourceFile({db,record,caseDirectory,filePath,rule,policy,si
       }
     }
     const wrapped=Object.assign(new Error(code==='FS_USER_CANCELLED'?'已取消导入，原有效批次保持不变。':
-      code==='FS_IMPORT_DUPLICATE'?error.message:'导入未发布，请根据错误码核对规则或材料；原有效批次保持不变。',{cause:error}),{code});
+      ['FS_IMPORT_DUPLICATE','FS_IMPORT_RETRY_STATE','FS_IMPORT_RETRY_RULE','FS_ARCHIVE_HASH'].includes(code)?error.message:
+        '导入未发布，请根据错误码核对规则或材料；原有效批次保持不变。',{cause:error}),{code});
     wrapped.receipt={state:code==='FS_USER_CANCELLED'?'cancelled':'failed',sourceFileId:sourceId,batchId,
-      importedRows:written,pendingRows:pending,unquantifiableRows:unquantifiable,errorCode:code};
+      importedRows:written,pendingRows:pending,unquantifiableRows:unquantifiable,diagnosticRows,errorCode:code};
     throw wrapped;
   } finally { active.delete(db); }
 }
@@ -337,12 +424,38 @@ function recoverInterruptedImports({db,record,caseDirectory}={}) {
     });
   }
   let archive=[];
-  if(fs.existsSync(path.join(caseDirectory,'archive/.journal')))archive=new ArchiveStore(caseDirectory).inspectRecovery();
-  return {recovered,diagnostics,archive};
+  const stagingCleanup={removed:0,warnings:0};
+  if (fs.existsSync(path.join(caseDirectory,'archive/.journal'))) {
+    try {
+      const store=new ArchiveStore(caseDirectory);
+      archive=store.inspectRecovery();
+      const referenced=db.prepare(`SELECT
+        EXISTS(SELECT 1 FROM archive_entry a WHERE a.staging_relative_path=? AND (
+          EXISTS(SELECT 1 FROM source_file s WHERE s.archive_entry_id=a.id) OR
+          EXISTS(SELECT 1 FROM import_batch b WHERE b.archive_entry_id=a.id))) OR
+        EXISTS(SELECT 1 FROM import_batch b WHERE b.status IN ('pending','parsing','importing')
+          AND CASE WHEN json_valid(b.notes) THEN json_extract(b.notes,'$.archiveTaskId')=? ELSE 0 END) AS referenced`);
+      const isReferenced=entry=>referenced.get(entry.stagingRelativePath,entry.taskId).referenced===1;
+      for (const entry of archive) {
+        if (entry.requiresReview) { stagingCleanup.warnings++; continue; }
+        if (!entry.stagingExists && !entry.interruptedJournal) continue;
+        try {
+          // Hold the write lock from the actual reference check to unlink.
+          // The app's single worker serializes this operation with imports.
+          const cleaned=db.transaction(()=>store.cleanupStaging(entry.taskId,{isReferenced})).immediate();
+          if (cleaned.stagingRemoved || cleaned.journalTemporaryRemoved) stagingCleanup.removed++;
+        } catch (error) {
+          if (!['FS_ARCHIVE_REFERENCED','FS_ARCHIVE_GRACE'].includes(error.code)) stagingCleanup.warnings++;
+        }
+      }
+      if (stagingCleanup.removed) archive=store.inspectRecovery();
+    } catch (_) { stagingCleanup.warnings++; }
+  }
+  return {recovered,diagnostics,archive,stagingCleanup};
 }
 
 const importAlipayAccount=options=>{
   if(options?.rule?.format_key!==FORMAT_KEY)fail('FS_IMPORT_RULE','此入口仅支持支付宝账户明细。');
   return importSourceFile(options);
 };
-module.exports={importAlipayAccount,importSourceFile,readFlowSource,recoverInterruptedImports,PARSER_VERSION,MAX_BYTES};
+module.exports={importAlipayAccount,importSourceFile,retryFailedImport,readFlowSource,recoverInterruptedImports,PARSER_VERSION,MAX_BYTES};

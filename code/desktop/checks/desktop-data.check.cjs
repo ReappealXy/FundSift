@@ -75,10 +75,12 @@ test('微信已批准规则按整数分写入，重复表头按位置回源，�
   const f = await fixture(t), {HEADERS:wxHeaders} = require('../wechat-trades.cjs');
   const row=['platform-user','wx-order','large-order','合成名称','出','快捷支付','消费','2026-11-19 08:00:00',
     '101','0','card-0001','bank-link','网联','本方信息','peer-user','合成对方','card-0002','合成银行','peer-link',
-    '银联','','非间连','{}','','','备注','末列'];
+    '银联','','非间连','{','','','备注','末列'];
   const filePath=path.join(f.root,'synthetic.txt');fs.writeFileSync(filePath,[wxHeaders,row].map(values=>values.join('\t')).join('\r\n')+'\r\n');
   const result=await f.data.importFile(f.c.id,{...f.input,filePath,formatKey:'wechat-trades-27col-v1'});
   assert.equal(result.receipt.importedRows,1);assert.equal(result.receipt.pendingRows,0);
+  assert.equal(result.receipt.diagnosticRows,1);
+  assert.equal(result.materials.materials[0].diagnosticRows,'1');
   const page=f.data.queryFlows(f.c.id), flow=page.rows[0];
   assert.equal(flow.amount,'-101');assert.equal(flow.acct_no,'platform-user');assert.equal(flow.balance,'0');
   const source=await f.data.readFlowSource(f.c.id,{flowId:flow.id,dataVersion:page.dataVersion});

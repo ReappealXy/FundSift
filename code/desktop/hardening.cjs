@@ -383,9 +383,15 @@ function installScopeGuards(db, scope) {
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='format_rule_config'").get()) {
     tables.format_rule_config = () => '0';
     // An unassociated staging ledger is registered through the explicit full
-    // integrity entry point. Scoped publication may only touch its own batch.
+    // integrity entry point. Scoped writes require batch references entirely
+    // within the declared material scope. The v3 legacy backreference is not
+    // used as ownership because several batches can share one archive.
     tables.archive_entry = row => scope.source ? `EXISTS(SELECT 1 FROM main.import_batch b
-      WHERE b.id=${row}.batch_id AND b.source_file_id IN (SELECT id FROM temp.fundsift_write_scope))` : '0';
+      WHERE b.archive_entry_id=${row}.id AND b.source_file_id IN (SELECT id FROM temp.fundsift_write_scope))
+      AND NOT EXISTS(SELECT 1 FROM main.import_batch b WHERE b.archive_entry_id=${row}.id
+        AND b.source_file_id NOT IN (SELECT id FROM temp.fundsift_write_scope))
+      AND NOT EXISTS(SELECT 1 FROM main.source_file s WHERE s.archive_entry_id=${row}.id
+        AND s.id NOT IN (SELECT id FROM temp.fundsift_write_scope))` : '0';
   }
   for (const [table, allowed] of Object.entries(tables)) {
     for (const event of ['INSERT','UPDATE','DELETE']) {

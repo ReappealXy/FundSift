@@ -42,4 +42,10 @@ function createImportFixtures(directory){
   fs.writeFileSync(ccb,zip(files([values(),values({0:'2',14:'-1.00',12:'消费退货'})])));
   return [{formatKey:'alipay-account-17col-v1',filePath:alipay},{formatKey:'wechat-trades-27col-v1',filePath:wechat},{formatKey:'ccb-account-32col-v1',filePath:ccb}];
 }
-module.exports={createImportFixtures};
+function createFailedImportFixture(directory) {
+  const filePath = path.join(directory, 'synthetic-malformed.csv');
+  const { HEADERS } = require('../code/desktop/alipay-account.cjs');
+  fs.writeFileSync(filePath, '\ufeff' + HEADERS.join(',') + '\r\n缺列,结构错误\r\n');
+  return { formatKey: 'alipay-account-17col-v1', filePath };
+}
+module.exports={createImportFixtures,createFailedImportFixture};

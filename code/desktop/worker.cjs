@@ -13,9 +13,9 @@ function publishProgress(event) {
 }
 const store = new WorkspaceStore({ schemaPath: process.argv[2], onProgress: phase => publishProgress({ phase }) });
 const desktopData = new DesktopData(store, { onProgress: publishProgress });
-const methods = new Set(['inspectWorkspace', 'openWorkspace', 'listCases', 'createCase', 'openCase', 'close',
-  'importFile', 'listMaterials', 'queryFlows', 'readFlowSource', 'queryRelations']);
-const dataMethods = new Set(['importFile', 'listMaterials', 'queryFlows', 'readFlowSource', 'queryRelations']);
+const dataMethods = new Set(['importFile', 'retryImport', 'listMaterials', 'queryFlows', 'readFlowSource', 'queryRelations',
+  'getWorkpaperContext', 'exportWorkpaper']);
+const methods = new Set(['inspectWorkspace', 'openWorkspace', 'listCases', 'createCase', 'openCase', 'close', ...dataMethods]);
 let operation = Promise.resolve();
 
 process.parentPort.on('message', ({ data: request }) => {

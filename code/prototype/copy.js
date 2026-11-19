@@ -6,8 +6,8 @@
     desktop,
     terms,
     operation: {
-      names: { 'get-state': '读取案件', 'list-cases': '刷新案件列表', 'choose-workspace': '设置数据存放位置', 'create-case': '新建案件', 'open-case': '打开案件', 'choose-import':'导入材料', 'list-materials':'读取材料', 'query-flows':'读取流水', 'read-flow-source':'核验原文', 'query-relations':'查找关联候选' },
-      phases: { queued: '等待前面的操作完成', running: '正在处理', 'choosing-location': '等待选择存放文件夹', 'confirming-location': '等待确认存放位置', checking: '正在检查数据', 'backing-up': '正在备份旧版数据', 'verifying-backup': '正在校验备份', upgrading: '正在升级旧版数据', 'saving-settings': '正在保存设置', 'choosing-file':'等待选择原始材料', 'confirming-import':'等待确认材料规则', archiving:'正在归档原件',parsing:'正在检查格式',importing:'正在写入流水','verifying-archive':'正在复验归档',publishing:'正在发布完整批次','reading-source':'正在核验来源原文', completed: '操作完成', failed: '操作未完成' },
+      names: { 'get-state': '读取案件', 'list-cases': '刷新案件列表', 'choose-workspace': '设置数据存放位置', 'create-case': '新建案件', 'open-case': '打开案件', 'choose-import':'导入材料', 'retry-import':'重试导入', 'list-materials':'读取材料', 'query-flows':'读取流水', 'read-flow-source':'核验原文', 'query-relations':'查找关联候选', 'export-workpaper':'导出 Excel 底稿' },
+      phases: { queued: '等待前面的操作完成', running: '正在处理', 'choosing-location': '等待选择存放文件夹', 'confirming-location': '等待确认存放位置', checking: '正在检查数据', 'backing-up': '正在备份旧版数据', 'verifying-backup': '正在校验备份', upgrading: '正在升级旧版数据', 'saving-settings': '正在保存设置', 'choosing-file':'等待选择原始材料', 'confirming-import':'等待确认材料规则', archiving:'正在归档原件',parsing:'正在检查格式',importing:'正在写入流水','verifying-archive':'正在复验归档',publishing:'正在发布完整批次','reading-source':'正在核验来源原文','reading-export':'正在读取底稿数据','writing-export':'正在生成 Excel 底稿', completed: '操作完成', failed: '操作未完成' },
       elapsed: '已用时 {seconds} 秒',
       pending: '完成后会自动显示结果。',
       waiting: '本次操作尚未返回结果，请继续等待，不要重复操作或强行关闭软件。',
@@ -23,7 +23,7 @@
       capabilitiesSubheading: desktop ? '具体格式导入与只读核对' : '从材料整理，到结果复核',
       features: desktop ? [
         { title: '具体模板，保真导入', body: '支持支付宝账户CSV、微信27列TXT、建行32列XLSX的具体模板。' },
-        { title: '异常保留，只读核对', body: '查看标准金额和待核原因，人工修改与正式导出开发中。' },
+        { title: '异常保留，只读核对', body: '查看标准金额和待核原因，可导出 Excel 核对底稿。' },
         { title: '保留原值，回看来源', body: '核验归档原件与来源坐标，保留重复编号对应的不同记录。' }
       ] : [
         { title: '多源流水，统一整理', body: '汇集合成的银行与支付平台材料，在同一张流水表中查看。' },
@@ -38,7 +38,7 @@
         { title: '复核异常', body: '核对问题，记录依据' },
         { title: '导出结果', body: '带出状态与来源信息' }
       ],
-      footer: desktop ? '本机保存案件 · 流水功能开发中' : 'HTML 交互演示 · 工作台使用合成数据',
+      footer: desktop ? '本机保存案件 · Excel 核对底稿' : 'HTML 交互演示 · 工作台使用合成数据',
       preference: '可在「使用说明」中随时恢复',
       preferenceUnavailable: desktop ? '当前无法保存启动选择，下次仍会显示介绍页。' : '当前浏览器无法保存启动选择，下次仍会显示介绍页。',
       preferenceFailed: '已进入工作台，启动选择未能保存，下次仍会显示介绍页。'
@@ -67,7 +67,7 @@
       readFailed: '案件数据暂时无法读取',
       retry: '重试读取', refresh: '刷新列表',
       unknown: '“—”表示统计尚待检查；具体原因见对应案件的数据状态。',
-      overview: '工作台统计用于概览。当前可查已发布流水与待核原因；正式汇总与导出尚在开发中。',
+      overview: '工作台统计用于概览。可查看已发布流水与待核原因，也可导出 Excel 核对底稿。',
       incomplete: '部分案件暂不可读或统计尚待检查；“—”表示总数未知，部分案件数量不代表全部结果。具体原因见案件列表。',
       persistence: '本机保存 · 下次可从案件列表继续打开',
       searchScope: '搜索范围：这个数据存放位置内的案件名称与编号，不搜索流水。',
@@ -119,7 +119,7 @@
     help: {
       title: terms.help,
       sections: desktop ? [
-        { title: '当前能做什么？', body: ['选择数据存放位置，创建、打开和切换案件。名称与编号保存在本机，下次可以继续打开。', '技术预览仅支持指定的支付宝账户17列CSV、微信27列TXT和建行32列XLSX，可查看流水、待核原因与归档原文；完整G0尚未完成。人工修改、正式汇总及导出开发中。'] },
+        { title: '当前能做什么？', body: ['选择数据存放位置，创建、打开和切换案件。名称与编号保存在本机，下次可以继续打开。', '技术预览支持指定的支付宝账户17列CSV、微信27列TXT和建行32列XLSX。可查看流水、待核原因与归档原文，并导出 Excel 核对底稿。人工复核与正式汇总开发中。'] },
         { title: '下一步做什么？', body: ['第一次使用：选择存放文件夹 → 新建案件 → 材料管理中选择原始材料 → 查看流水与只读待核。已有案件可从列表打开。', '每次选择材料后会显示格式及规则确认。其它模板会报错；设置保存位置不会自动导入文件。'] },
         { title: '出了问题怎么办？', body: ['文件夹被移动、改名或所在磁盘断开时，先恢复原保存位置，再重试读取。', '检查或升级失败时，请保留整个数据文件夹和错误信息，不要自行删除或覆盖案件文件；需要时联系维护人员。', '“—”表示统计尚待检查，具体原因见案件列表；不要当成零。'] }
       ] : [

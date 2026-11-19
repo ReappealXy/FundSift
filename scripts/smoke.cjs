@@ -49,14 +49,21 @@ async function seedLegacy(workspace, profile) {
   const output = path.join(root, 'artifacts', 'm0-hardening-' + version + (packaged ? '-packaged' : '-development'));
   await fs.mkdir(output, { recursive: true });
   const results = [];
-  const importFixtures = require('./import-smoke-fixtures.cjs').createImportFixtures(path.join(temp,'import-fixtures'));
+  const { createImportFixtures, createFailedImportFixture } = require('./import-smoke-fixtures.cjs');
+  const importDirectory = path.join(temp, 'import-fixtures');
+  const importFixtures = createImportFixtures(importDirectory);
+  const failedFixture = createFailedImportFixture(importDirectory);
+  const exportFolder = path.join(temp, 'export-output');
+  await fs.mkdir(exportFolder);
   const legacyWorkspace = path.join(temp, 'legacy-workspace'), legacyProfile = path.join(temp, 'legacy-profile');
   await seedLegacy(legacyWorkspace, legacyProfile);
   const upgrade = { phase: 'upgrade', profile: legacyProfile, workspace: legacyWorkspace, result: path.join(output, 'upgrade.json'), screenshot: path.join(output, 'upgrade.png') };
   results.push(await launch(upgrade, path.join(temp, 'upgrade.json')));
   console.log('PASS ' + (packaged ? 'packaged ' : '') + 'v1 upgrade');
   for (const phase of ['create', 'reopen']) {
-    const config = { phase, profile, workspace, ...(phase==='create'?{importFixtures:[...importFixtures,importFixtures[0]]}:{}), result: path.join(output, phase + '.json'), screenshot: path.join(output, phase + '.png') };
+    const config = { phase, profile, workspace, ...(phase === 'create' ? {
+      importFixtures: [...importFixtures, importFixtures[0], failedFixture], exportFolder
+    } : {}), result: path.join(output, phase + '.json'), screenshot: path.join(output, phase + '.png') };
     results.push(await launch(config, path.join(temp, phase + '.json')));
     console.log('PASS ' + (packaged ? 'packaged ' : '') + phase);
   }

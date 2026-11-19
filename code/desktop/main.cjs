@@ -72,10 +72,12 @@ async function getState() {
   if (!workspacePath) await readSettings();
   if (!workspacePath) return { needsWorkspace: true, workspacePath: null, cases: [], currentCaseId: null };
   const state = await worker.request('openWorkspace', workspacePath, { allowCreate: false });
+  let stagingCleanup = null;
   if (currentCaseId && state.cases.some(item => item.id === currentCaseId && item.available)) {
-    await worker.request('openCase', currentCaseId);
+    stagingCleanup = state.currentCaseId === currentCaseId ? state.stagingCleanup ?? null
+      : (await worker.request('openCase', currentCaseId)).stagingCleanup ?? null;
   } else currentCaseId = null;
-  return { ...state, needsWorkspace: false, currentCaseId };
+  return { ...state, needsWorkspace: false, currentCaseId, stagingCleanup };
 }
 
 function register(name, handler) {
@@ -149,6 +151,28 @@ async function start() {
   register('query-flows', async (caseId, options) => { requireCurrentCase(caseId); return worker.request('queryFlows', caseId, options); });
   register('query-relations', async (caseId, options) => { requireCurrentCase(caseId); return worker.request('queryRelations', caseId, options); });
   register('read-flow-source', async (caseId, options) => { requireCurrentCase(caseId); return worker.request('readFlowSource', caseId, options); });
+  register('retry-import', async (caseId, sourceFileId) => {
+    requireCurrentCase(caseId);
+    return worker.request('retryImport', caseId, sourceFileId);
+  });
+  register('export-workpaper', async caseId => {
+    requireCurrentCase(caseId);
+    const prepared = await worker.request('getWorkpaperContext', caseId);
+    const filename = /^流水核对底稿-格式v([1-9]\d*)-数据v(0|[1-9]\d*)-\d{8}T\d{9}Z\.xlsx(?![\s\S])/u.exec(prepared.fileName);
+    if (prepared.caseId !== caseId || filename?.[1] !== String(prepared.formatVersion) || filename?.[2] !== prepared.dataVersion) {
+      throw Object.assign(new Error('底稿文件名无法核验，请重新导出。'), { code: 'FS_EXPORT_NAME' });
+    }
+    activeStatus?.update('choosing-location');
+    const choice = smokeConfig?.exportFolder ? { filePaths: [smokeConfig.exportFolder] }
+      : await dialog.showOpenDialog(window, { title: '选择底稿保存位置', buttonLabel: '导出 Excel 底稿',
+        properties: ['openDirectory', 'createDirectory'] });
+    if (choice.canceled || !choice.filePaths?.length) return { cancelled: true };
+    if (choice.filePaths.length !== 1 || !path.isAbsolute(choice.filePaths[0])) {
+      throw Object.assign(new Error('请选择一个本地文件夹。'), { code: 'FS_EXPORT_PATH' });
+    }
+    requireCurrentCase(caseId);
+    return worker.request('exportWorkpaper', caseId, path.join(choice.filePaths[0], prepared.fileName), prepared.dataVersion);
+  });
   register('choose-import', async caseId => {
     requireCurrentCase(caseId);
     const fixture = smokeConfig?.importFixtures ? smokeConfig.importFixtures[smokeImportIndex++] : null;

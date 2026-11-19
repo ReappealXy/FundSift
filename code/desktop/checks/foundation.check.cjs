@@ -162,13 +162,18 @@ test('归档账本按实际source及历史batch引用保护，核验哈希和引
   assert.throws(()=>db.prepare(`INSERT INTO archive_entry VALUES(2,NULL,'archive/.staging/b','archive/b.csv',?,NULL,10,'verified','t','t')`).run('b'.repeat(64)));
 });
 
-test('范围事务包含新表：配置与未归属staging拒绝，已归属本批账本允许',t=>{
+test('范围事务归档归属只认批次正向引用，旧反向列单独存在不能授权',t=>{
   const {db}=fixture(t);upgrade(db);
-  runCaseIntegrityTransaction(db,record,()=>seed(db));
+  runCaseIntegrityTransaction(db,record,()=>{
+    seed(db);
+    db.prepare(`INSERT INTO archive_entry VALUES(1,NULL,'archive/.staging/a','archive/a.csv',?,?,10,'verified','t','t')`).run('a'.repeat(64),'a'.repeat(64));
+    db.exec('UPDATE import_batch SET archive_entry_id=1 WHERE id=1');
+  });
   runCaseTransaction(db,record,{sourceFileIds:[1]},()=>{
     assert.throws(()=>registerRuleConfig(db,{rule_id:1,rule_version:1,config:config()}));
-    assert.throws(()=>db.prepare(`INSERT INTO archive_entry VALUES(1,NULL,'archive/.staging/a','archive/a.csv',?,NULL,10,'staged','t',NULL)`).run('a'.repeat(64)));
-    db.prepare(`INSERT INTO archive_entry VALUES(1,1,'archive/.staging/a','archive/a.csv',?,NULL,10,'staged','t',NULL)`).run('a'.repeat(64));
+    assert.throws(()=>db.prepare(`INSERT INTO archive_entry VALUES(2,NULL,'archive/.staging/b','archive/b.csv',?,NULL,10,'staged','t',NULL)`).run('a'.repeat(64)));
+    assert.throws(()=>db.prepare(`INSERT INTO archive_entry VALUES(2,1,'archive/.staging/b','archive/b.csv',?,NULL,10,'staged','t',NULL)`).run('a'.repeat(64)),/超出本次声明范围/);
+    db.exec('UPDATE archive_entry SET status=status WHERE id=1');
   });
 });
 

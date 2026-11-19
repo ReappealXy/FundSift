@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('fundsiftDesktop', Object.freeze({
   createCase: payload => ipcRenderer.invoke('fundsift:create-case', payload),
   openCase: id => ipcRenderer.invoke('fundsift:open-case', id),
   chooseImport: caseId => ipcRenderer.invoke('fundsift:choose-import', caseId),
+  retryImport: (caseId, sourceFileId) => ipcRenderer.invoke('fundsift:retry-import', caseId, sourceFileId),
+  exportWorkpaper: caseId => ipcRenderer.invoke('fundsift:export-workpaper', caseId),
   listMaterials: caseId => ipcRenderer.invoke('fundsift:list-materials', caseId),
   queryFlows: (caseId, options) => ipcRenderer.invoke('fundsift:query-flows', caseId, options),
   queryRelations: (caseId, options) => ipcRenderer.invoke('fundsift:query-relations', caseId, options),
@@ -17,8 +19,10 @@ contextBridge.exposeInMainWorld('fundsiftDesktop', Object.freeze({
   onOperationStatus: callback => {
     if (typeof callback !== 'function') throw new TypeError('状态监听需要一个函数。');
     const phases = new Set(['queued', 'running', 'choosing-location', 'confirming-location', 'checking', 'backing-up', 'verifying-backup', 'upgrading', 'saving-settings',
-      'choosing-file', 'confirming-import', 'archiving', 'parsing', 'importing', 'verifying-archive', 'publishing', 'reading-source', 'completed', 'failed']);
-    const operations = new Set(['get-state', 'list-cases', 'choose-workspace', 'create-case', 'open-case', 'choose-import', 'list-materials', 'query-flows', 'read-flow-source', 'query-relations']);
+      'choosing-file', 'confirming-import', 'archiving', 'parsing', 'importing', 'verifying-archive', 'publishing', 'reading-source',
+      'reading-export', 'writing-export', 'completed', 'failed']);
+    const operations = new Set(['get-state', 'list-cases', 'choose-workspace', 'create-case', 'open-case', 'choose-import', 'retry-import',
+      'list-materials', 'query-flows', 'read-flow-source', 'query-relations', 'export-workpaper']);
     const listener = (_event, value) => {
       if (!value || !Number.isSafeInteger(value.operationId) || value.operationId < 1 ||
           !operations.has(value.operation) || !phases.has(value.phase) ||

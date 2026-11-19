@@ -1,7 +1,8 @@
 'use strict';
 
 const PHASES = new Set(['queued', 'running', 'choosing-location', 'confirming-location', 'checking', 'backing-up', 'verifying-backup', 'upgrading', 'saving-settings',
-  'choosing-file', 'confirming-import', 'archiving', 'parsing', 'importing', 'verifying-archive', 'publishing', 'reading-source', 'completed', 'failed']);
+  'choosing-file', 'confirming-import', 'archiving', 'parsing', 'importing', 'verifying-archive', 'publishing', 'reading-source',
+  'reading-export', 'writing-export', 'completed', 'failed']);
 function sanitizeProgress(value) {
   if (value === undefined) return undefined;
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -24,7 +25,7 @@ function sanitizeProgress(value) {
 function sanitizeReceipt(value) {
   if (!value || typeof value !== 'object' || !['completed','failed','cancelled'].includes(value.state)) return undefined;
   const result = { state: value.state };
-  for (const key of ['sourceFileId','batchId','totalRows','importedRows','skippedRows','pendingRows','unquantifiableRows','errorRows','cancelledRows']) {
+  for (const key of ['sourceFileId','batchId','totalRows','importedRows','skippedRows','pendingRows','unquantifiableRows','diagnosticRows','errorRows','cancelledRows']) {
     if (value[key] === undefined) continue;
     if (value[key] === null && ['sourceFileId','batchId'].includes(key)) result[key] = null;
     else if (Number.isSafeInteger(value[key]) && value[key] >= 0) result[key] = value[key];

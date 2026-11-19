@@ -152,9 +152,24 @@ async function run({ app, window, worker, config, getState, saveSettings, setWor
     await js('document.querySelector("[data-action=desktop-import]").click()');
     await wait('document.querySelector(".desktop-data-error")?.textContent.includes("相同原件")');
     verify(await js('document.querySelectorAll(".desktop-materials tbody tr").length===3 && document.querySelector(".import-receipt").textContent.includes("导入未发布")'), 'duplicate refuses publication with visible receipt');
+    await js('document.querySelector("[data-action=desktop-import]").click()');
+    await wait('document.querySelector("[data-action=desktop-retry-import]:not(:disabled)") !== null');
+    const caseId = (await getState()).currentCaseId;
+    const beforeRetry = await worker.request('listMaterials', caseId);
+    const failed = beforeRetry.materials.find(material => material.canRetry);
+    verify(failed && failed.currentBatchId === null, 'failed material offers retry without a published batch');
+    await js('document.querySelector("[data-action=desktop-retry-import]").click()');
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (await js('document.querySelector("[data-action=desktop-retry-import]:not(:disabled)") !== null')) break;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    const afterRetry = await worker.request('listMaterials', caseId);
+    const retried = afterRetry.materials.find(material => material.id === failed.id);
+    verify(retried?.canRetry && retried.latestBatchId !== failed.latestBatchId && !retried.currentBatchId,
+      'retry reuses the original material and records a new failure without publishing partial rows');
   }
   if(config.phase!=='upgrade'){
-    verify(await js('document.querySelectorAll(".desktop-materials tbody tr").length===3'), 'all imported materials survive reopen');
+    verify(await js('document.querySelectorAll(".desktop-materials tbody tr").length===4'), 'three published materials and the failed material survive reopen');
     await js('document.querySelector("[data-action=nav][data-route=flows]").click()');
     await wait('document.querySelectorAll(".desktop-ledger tbody tr").length===6');
     verify(await js('document.querySelector(".desktop-ledger").textContent.includes("-1.01") && !document.querySelector("[data-action=confirm-amount]")'), 'real DB amount is precise and desktop review cannot edit');
@@ -176,6 +191,7 @@ async function run({ app, window, worker, config, getState, saveSettings, setWor
       await wait('document.querySelectorAll(".desktop-ledger tbody tr").length===6');
       await js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
       verify(await js('document.documentElement.scrollWidth<=innerWidth && document.querySelector(".desktop-ledger").closest(".table-scroll").clientWidth < document.querySelector(".desktop-ledger").scrollWidth'), '1024 layout confines wide ledger scrolling to table');
+      verify(await js('(()=>{const button=document.querySelector("[data-action=desktop-source]");const clip=button.closest(".table-scroll").getBoundingClientRect();const rect=button.getBoundingClientRect();return rect.left>=clip.left && rect.right<=clip.right;})()'), '1024 layout keeps the first original-record action visible');
       await fs.writeFile(config.screenshot.replace('.png','-flows1024.png'),(await window.webContents.capturePage()).toPNG());
       await js('document.querySelector("[data-action=desktop-source]").click()');
       await wait('document.querySelector(".raw-evidence tbody tr") !== null');
@@ -183,6 +199,21 @@ async function run({ app, window, worker, config, getState, saveSettings, setWor
       await js('document.querySelector(".modal-body").scrollTop=0;new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
       await fs.writeFile(config.screenshot.replace('.png','-source1024.png'),(await window.webContents.capturePage()).toPNG());
       await js('document.querySelector(".modal-head [data-action=close-modal]").click()');
+      await js('document.querySelector("[data-action=nav][data-route=exports]").click()');
+      await wait('document.querySelector("[data-action=desktop-export-workpaper]:not(:disabled)") !== null');
+      verify(await js('document.querySelector(".workpaper-panel").textContent.includes("本地 NTFS 文件夹")'), 'export panel explains compatible storage before choosing folder');
+      await js('document.querySelector("[data-action=desktop-export-workpaper]").click()');
+      await wait('document.querySelector(".workpaper-receipt") !== null');
+      const exported = await fs.readdir(config.exportFolder);
+      verify(exported.length === 1 && /^流水核对底稿-格式v2-数据v\d+-\d{8}T\d{9}Z\.xlsx$/.test(exported[0]), 'renderer exports one format-v2 XLSX and no temporary file');
+      const workbook = new (require('exceljs').Workbook)();
+      const workpaper = path.join(config.exportFolder, exported[0]);
+      await workbook.xlsx.readFile(workpaper);
+      verify(workbook.getWorksheet('流水明细')?.rowCount === 7 && workbook.getWorksheet('导出说明'), 'packaged export reopens with six effective records and the explanation sheet');
+      const headers = workbook.getWorksheet('流水明细').getRow(1).values;
+      verify(['原始金额单位', '原件收付记载', '原件记载说明', '摘要', '交易类型', '本方名称', '对方名称'].every(header => headers.includes(header)), 'reopened workbook includes the approved v2 evidence columns');
+      await fs.copyFile(workpaper, config.screenshot.replace('.png', '-workpaper.xlsx'));
+      await fs.writeFile(config.screenshot.replace('.png','-workpaper1024.png'),(await window.webContents.capturePage()).toPNG());
       window.setContentSize(1440,960);
     }
   }
