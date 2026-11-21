@@ -1,9 +1,9 @@
 {
   "name": "fundsift",
-  "version": "0.2.0-preview.5",
+  "version": "0.2.0-preview.6",
   "private": true,
-  "author": "东启",
-  "description": "东启勘流：本地资金流水分析工作台",
+  "author": "眉山东启会计师事务所（普通合伙）",
+  "description": "东启勘流是一款面向审计与资金核查的本地桌面软件。支持按案件导入指定格式的银行、微信支付和支付宝流水，逐笔核对异常、追溯原始记录，并导出 Excel 核对底稿。案件与材料保存在本机，供事务所内部使用。",
   "main": "code/desktop/main.cjs",
   "scripts": {
     "start": "electron .",
@@ -13,7 +13,8 @@
     "test:storage": "node scripts/run-electron-node.cjs --test code/desktop/checks/storage.check.cjs",
     "smoke": "node scripts/smoke.cjs",
     "build:dir": "electron-builder --win --x64 --dir",
-    "build": "electron-builder --win portable --x64"
+    "build": "electron-builder --win nsis --x64 --publish never",
+    "build:portable": "electron-builder --win portable --x64 --publish never"
   },
   "dependencies": {
     "@xmldom/xmldom": "0.9.12",
@@ -31,7 +32,8 @@
     "appId": "cn.dongqi.fundsift",
     "productName": "FundSift",
     "directories": {
-      "output": "dist"
+      "output": "dist",
+      "buildResources": "scripts/installer"
     },
     "files": [
       "code/desktop/**/*.cjs",
@@ -52,11 +54,26 @@
     "electronDist": "node_modules/electron/dist",
     "win": {
       "target": [
-        "portable"
+        "nsis"
       ],
       "icon": "code/desktop/assets/icon.ico",
       "signExecutable": false
     },
-    "artifactName": "FundSift-${version}-win-${arch}.${ext}"
+    "artifactName": "FundSift-${version}-win-${arch}.${ext}",
+    "afterPack": "./scripts/installer/fundsift-install-files.cjs",
+    "nsis": {
+      "artifactName": "FundSift-${version}-win-${arch}-setup.${ext}",
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "packElevateHelper": false,
+      "installerLanguages": [
+        "zh_CN"
+      ],
+      "shortcutName": "东启勘流",
+      "uninstallDisplayName": "东启勘流 (${version})",
+      "deleteAppDataOnUninstall": false,
+      "differentialPackage": false
+    }
   }
 }

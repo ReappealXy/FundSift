@@ -16,32 +16,11 @@
     },
     intro: {
       edition: desktop ? '本地桌面版' : '网页交互演示',
-      description: desktop ? '按案件导入原始流水，保留逐笔原文与处理依据。' : '使用合成数据，体验流水整理与核查流程。',
+      description: desktop ? '银行、微信、支付宝的流水并进同一张表。这一笔从哪来、到哪去、原文写的多少、落在哪份文件第几行，全在表上。核对过的留下依据，没核的单独标出来；导出的底稿，换个人接手也能照着复核一遍。' : '使用合成数据，体验流水整理与核查流程。',
       status: desktop ? `案件管理可用 · 三种具体格式导入技术预览 · ${manualReview?'单笔复核':'待核只读'}` : '合成数据仅供体验 · 不会保存真实案件',
       enter: desktop ? '进入案件工作台' : '进入示例工作台',
       help: terms.help,
-      capabilitiesHeading: desktop ? '当前预览能力' : '功能交互示意',
-      capabilitiesSubheading: desktop ? (manualReview?'具体格式导入与单笔复核':'具体格式导入与只读核对') : '从材料整理，到结果复核',
-      features: desktop ? [
-        { title: '具体模板，保真导入', body: '支持支付宝账户CSV、微信27列TXT、建行32列XLSX的具体模板。' },
-        manualReview ? { title: '逐笔核对，处理留痕', body: '待核流水可记说明，符合条件的建行负额退货可确认金额和方向。' }
-          : { title: '异常保留，只读核对', body: '查看标准金额和待核原因，可导出 Excel 核对底稿。' },
-        { title: '保留原值，回看来源', body: '核验归档原件与来源坐标，保留重复编号对应的不同记录。' }
-      ] : [
-        { title: '多源流水，统一整理', body: '汇集合成的银行与支付平台材料，在同一张流水表中查看。' },
-        { title: '异常分开，逐笔核对', body: '区分金额待核与余额差异，体验逐笔确认与记录依据。' },
-        { title: '保留原值，回看来源', body: '查看示例材料与记录位置，体验来源核查。' }
-      ],
-      workflowHeading: desktop ? '从材料到逐笔核对' : '一次核查，四步衔接',
-      workflowNote: desktop ? '技术预览，完整G0尚未完成' : '使用合成数据演示',
-      steps: [
-        { title: '导入案件材料', body: '银行与平台原始流水' },
-        { title: '整理流水明细', body: '对齐字段，保留来源' },
-        { title: '复核异常', body: '核对问题，记录依据' },
-        { title: '导出结果', body: '带出状态与来源信息' }
-      ],
       footer: desktop ? '本机保存案件 · Excel 核对底稿' : 'HTML 交互演示 · 工作台使用合成数据',
-      preference: '可在「使用说明」中随时恢复',
       preferenceUnavailable: desktop ? '当前无法保存启动选择，下次仍会显示介绍页。' : '当前浏览器无法保存启动选择，下次仍会显示介绍页。',
       preferenceFailed: '已进入工作台，启动选择未能保存，下次仍会显示介绍页。'
     },

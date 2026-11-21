@@ -30,7 +30,7 @@ function setup(bridge,{blockedStorage=false}={}){
   if(bridge)w.fundsiftDesktop=bridge;
   if(blockedStorage)Object.defineProperty(w,'localStorage',{get(){throw new w.DOMException('Storage unavailable','SecurityError');}});
   const errors=[];w.addEventListener('error',event=>errors.push(event.error||event.message));
-  for(const file of ['icons.js','data.js','exporter.js','copy.js','app.js','intro.js'])w.eval(fs.readFileSync(path.join(root,file),'utf8'));
+  for(const file of ['icons.js','data.js','exporter.js','copy.js','app.js','intro-board.js','intro.js'])w.eval(fs.readFileSync(path.join(root,file),'utf8'));
   const $=selector=>w.document.querySelector(selector),$$=selector=>[...w.document.querySelectorAll(selector)];
   const click=selector=>{const el=$(selector);assert.ok(el,'Missing '+selector);el.click();};
   const action=(name,extra='')=>click(`[data-action="${name}"]${extra}`);
@@ -42,14 +42,18 @@ async function main(){
   const declaredPage=new JSDOM(fs.readFileSync(path.join(root,'index.html'),'utf8'));
   const declaredScripts=[...declaredPage.window.document.scripts].map(script=>script.getAttribute('src'));declaredPage.window.close();
   verify(declaredScripts.includes('copy.js')&&declaredScripts.indexOf('copy.js')<declaredScripts.indexOf('app.js')&&declaredScripts.indexOf('copy.js')<declaredScripts.indexOf('intro.js'),'Shipped page loads shared copy before both consumers');
+  verify(declaredScripts.includes('intro-board.js'),'Shipped page loads the introduction ledger');
   // The same introductory page and help choose facts for the active environment.
   for(const mode of ['desktop','demo']){
     const f=fixture(),t=setup(mode==='desktop'?f.bridge:undefined);await tick();
     const intro=t.$('#intro-screen');
-    verify(t.$('.intro-edition').textContent.includes(mode==='desktop'?'本地桌面版':'网页交互演示'),mode+' introduction names actual mode');
+    verify(t.$('[data-intro-edition]').textContent.includes(mode==='desktop'?'本地桌面版':'网页交互演示'),mode+' introduction names actual mode');
     verify(intro.textContent.includes(mode==='desktop'?'案件管理可用':'合成数据'),mode+' introduction identifies usable capability');
     verify(!intro.textContent.includes('HTML 交互原型'),mode+' removes stale prototype label');
-    verify(intro.textContent.includes('概念示意'),mode+' retains honest illustration label');
+    verify(intro.querySelector('.sheet-head .case').textContent.startsWith('示例案件'),mode+' identifies the ledger as an example');
+    const firstSource=t.$('#src-file').textContent;
+    t.$('#flow').focus();t.key('ArrowDown');
+    verify(t.$('#src-idx').textContent.includes('02')&&t.$('#src-file').textContent!==firstSource,mode+' keyboard selection updates the example ledger source');
     const help=t.$('#intro-screen [data-action="help"]');assert.ok(help,'Introduction has help');help.focus();help.click();await tick();
     verify(!!t.$('.modal')&&!t.$('#modal-root').hidden&&!t.$('#modal-root').inert,mode+' introduction help is interactive');
     verify(t.$('#intro-screen').inert&&t.$('#application').inert,mode+' help protects background');

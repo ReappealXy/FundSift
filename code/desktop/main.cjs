@@ -25,8 +25,12 @@ if (process.env.FUNDSIFT_SMOKE_CONFIG) {
 }
 
 app.setName('FundSift');
-const singleInstance = app.requestSingleInstanceLock();
-if (!singleInstance) app.quit();
+const packagedWindowsApp = process.platform === 'win32' && app.isPackaged;
+const installerQuit = packagedWindowsApp && process.argv.includes('--fundsift-install-quit');
+const singleInstance = installerQuit
+  ? app.requestSingleInstanceLock({ installerQuit: true, executablePath: process.execPath })
+  : app.requestSingleInstanceLock();
+if (!singleInstance || installerQuit) app.quit();
 
 function safeError(error) {
   if (error.code?.startsWith('SQLITE_')) {
@@ -252,7 +256,23 @@ async function start() {
   }
 }
 
-app.on('second-instance', () => { if (window) { if (window.isMinimized()) window.restore(); window.show(); window.focus(); } });
+app.on('second-instance', (_event, _argv, _workingDirectory, data) => {
+  if (quitting) return;
+  if (data?.installerQuit === true) {
+    // The portable and installed builds can share an application profile.
+    // Only the active instance of the very same executable should exit.
+    if (packagedWindowsApp && typeof data.executablePath === 'string' &&
+        path.win32.normalize(data.executablePath).toLowerCase() === path.win32.normalize(process.execPath).toLowerCase()) {
+      app.quit();
+    }
+    return;
+  }
+  if (window && !window.isDestroyed()) {
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
+  }
+});
 app.on('window-all-closed', () => app.quit());
 app.on('before-quit', event => {
   if (quitReady || !worker) return;
@@ -261,4 +281,6 @@ app.on('before-quit', event => {
   quitting = true;
   operation.then(() => worker.close()).catch(() => {}).finally(() => { quitReady = true; app.quit(); });
 });
-if (singleInstance) app.whenReady().then(start).catch(error => { dialog.showErrorBox('无法启动东启勘流', safeError(error).message); app.quit(); });
+if (singleInstance && !installerQuit) {
+  app.whenReady().then(start).catch(error => { dialog.showErrorBox('无法启动东启勘流', safeError(error).message); app.quit(); });
+}

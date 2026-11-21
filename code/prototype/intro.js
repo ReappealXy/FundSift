@@ -11,23 +11,11 @@
   const copy=window.FUND_COPY.intro;
   const text=(selector,value)=>intro.querySelector(selector).textContent=value;
   text('[data-intro-edition]',copy.edition);
-  text('.intro-description',copy.description);
-  text('.intro-status',copy.status);
+  text('[data-intro-description]',copy.description);
+  text('[data-intro-status]',copy.status);
   text('#enter-workspace > span',copy.enter);
   text('#intro-help',copy.help);
-  text('#intro-capabilities-title',copy.capabilitiesHeading);
-  text('.intro-section-heading > p',copy.capabilitiesSubheading);
-  intro.querySelectorAll('.intro-capability-list article').forEach((el,i)=>{
-    el.querySelector('h3').textContent=copy.features[i].title;
-    el.querySelector('p').textContent=copy.features[i].body;
-  });
-  text('#intro-workflow-title',copy.workflowHeading);
-  text('.intro-workflow-label > p',copy.workflowNote);
-  intro.querySelectorAll('.intro-workflow li').forEach((el,i)=>{
-    el.querySelector('h3').textContent=copy.steps[i].title;
-    el.querySelector('p').textContent=copy.steps[i].body;
-  });
-  text('.intro-footer > p',copy.footer);
+  text('[data-intro-footer]',copy.footer);
   intro.dataset.ready='true';
   const introRoute=hash=>/^#intro(?:$|-(?:top|capabilities|workflow)$)/.test(hash);
   const floatingUI=['inspector','modal-root','toast-root'];
@@ -43,7 +31,8 @@
   function syncPreference(){
     checkbox.checked=skip;
     checkbox.disabled=!remember;
-    note.textContent=remember?copy.preference:copy.preferenceUnavailable;
+    note.hidden=remember;
+    note.textContent=remember?'':copy.preferenceUnavailable;
   }
   function setSkip(value){
     if(!remember)return false;
@@ -59,7 +48,7 @@
     floatingUI.forEach(id=>{const el=document.getElementById(id);el.hidden=true;el.inert=true;});
     intro.hidden=false;intro.inert=false;
     document.body.classList.add('intro-visible');
-    document.title='东启勘流 · 资金流水分析';theme.setAttribute('content','#ffffff');
+    document.title='东启勘流 · 资金流水分析';theme.setAttribute('content','#f2f0ea');
     syncPreference();intro.scrollTop=0;
     if(!isStartup){location.hash='intro';document.getElementById('intro-title').focus({preventScroll:true});}
   }
@@ -90,21 +79,14 @@
       entering=true;enterButton.disabled=true;intro.inert=true;
       application.hidden=false;application.inert=true;
       document.body.classList.add('intro-transition');
-      // Commit the starting layer before the exit/reveal choreography begins.
+      // Commit the visible layer before starting the fade.
       void intro.offsetWidth;
       document.body.classList.add('intro-departing');
     }
     document.dispatchEvent(new CustomEvent('fundsift:enter-workspace'));
-    if(animate)transitionTimer=setTimeout(finish,1120);else finish();
+    if(animate)transitionTimer=setTimeout(finish,320);else finish();
   }
   enterButton.addEventListener('click',enter);
-  intro.querySelectorAll('a[href^="#intro"]').forEach(link=>link.addEventListener('click',event=>{
-    event.preventDefault();
-    if(entering)return;
-    const target=document.getElementById(link.getAttribute('href').slice(1));
-    if(target){target.setAttribute('tabindex','-1');target.focus({preventScroll:true});}
-    history.replaceState(null,'',link.getAttribute('href'));
-  }));
   window.FUND_INTRO={show,enter,setSkip,shouldSkip:()=>skip,canRemember:()=>remember,isVisible:()=>!intro.hidden};
   window.addEventListener('hashchange',()=>{
     if(entering)return;

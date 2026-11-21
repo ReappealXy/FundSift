@@ -110,11 +110,16 @@ test('隔离桥只转发允许的状态字段，解绑后不再通知；无任�
   assert.equal(bridge.send, undefined);
 });
 
-test('主进程只向合法主页面发布状态，排队事件先于执行；关闭等待最终结果', async () => {
+test('主进程只向合法主页面发布状态，安装退出等待已排队操作的最终结果', async () => {
   const handlers = new Map(), events = [], actions = [], app = new EventEmitter();
-  let window, worker, release;
-  Object.assign(app, { setName() {}, requestSingleInstanceLock: () => true, getPath: () => 'synthetic-profile',
-    whenReady: () => Promise.resolve(), quit() { actions.push('quit'); } });
+  const installedExe = 'D:\\东启勘流\\FundSift.exe';
+  let window, worker, release, prevented;
+  Object.assign(app, { isPackaged: true, setName() {}, requestSingleInstanceLock: () => true, getPath: () => 'synthetic-profile',
+    whenReady: () => Promise.resolve(), quit() {
+      prevented = false;
+      app.emit('before-quit', { preventDefault() { prevented = true; } });
+      if (!prevented) actions.push('quit');
+    } });
   class FakeWorker {
     constructor(_schema, options) { worker = this; this.progress = options.onProgress; }
     async request(method) {
@@ -142,7 +147,7 @@ test('主进程只向合法主页面发布状态，排队事件先于执行；�
   const electron = { app, BrowserWindow: FakeWindow, ipcMain: { handle: (name, handler) => handlers.set(name, handler) }, dialog: {},
     session: { defaultSession: { setPermissionRequestHandler() {}, webRequest: { onHeadersReceived() {} } } } };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../main.cjs'), 'utf8'), {
-    __dirname: path.resolve(__dirname, '..'), process: { env: {} },
+    __dirname: path.resolve(__dirname, '..'), process: { env: {}, platform: 'win32', argv: [installedExe], execPath: installedExe },
     require: name => name === 'electron' ? electron : name === './worker-client.cjs' ? { WorkerClient: FakeWorker }
       : name === 'node:fs/promises' ? { async readFile() { return JSON.stringify({ version: 1, workspacePath: path.resolve('synthetic-data') }); } }
       : require(name.startsWith('./') ? path.resolve(__dirname, '..', name) : name)
@@ -159,8 +164,9 @@ test('主进程只向合法主页面发布状态，排队事件先于执行；�
   assert.deepEqual(actions, ['openWorkspace']);
   worker.progress({ phase: 'backing-up' });
   assert.equal(events.at(-1).phase, 'backing-up');
-  let prevented = false;
-  app.emit('before-quit', { preventDefault() { prevented = true; } });
+  app.emit('second-instance', {}, [], '', { installerQuit: true, executablePath: 'D:\\旧便携版\\FundSift.exe' });
+  assert.equal(prevented, undefined);
+  app.emit('second-instance', {}, [], '', { installerQuit: true, executablePath: 'd:/东启勘流/FUNDSIFT.EXE' });
   assert.equal(prevented, true);
   assert.ok(!actions.includes('close'));
   const blocked = await handlers.get('fundsift:get-state')(sender);
@@ -173,6 +179,32 @@ test('主进程只向合法主页面发布状态，排队事件先于执行；�
   assert.deepEqual(events.filter(value => !value.active).map(value => [value.operationId, value.phase]), [[1, 'completed'], [2, 'failed']]);
   assert.ok(events.findIndex(value => value.operationId === 2 && value.phase === 'running') >
     events.findIndex(value => value.operationId === 1 && value.phase === 'completed'));
+});
+
+test('安装退出命令只转发请求，独立执行也不初始化应用', () => {
+  const executablePath = 'D:\\东启勘流\\FundSift.exe';
+  for (const isPrimary of [true, false]) {
+    const app = new EventEmitter();
+    const calls = [];
+    Object.assign(app, {
+      isPackaged: true, setName() {},
+      requestSingleInstanceLock(data) {
+        assert.equal(data.installerQuit, true);
+        assert.equal(data.executablePath, executablePath);
+        calls.push('lock');
+        return isPrimary;
+      },
+      quit() { calls.push('quit'); },
+      whenReady() { calls.push('ready'); return Promise.resolve(); }
+    });
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../main.cjs'), 'utf8'), {
+      __dirname: path.resolve(__dirname, '..'),
+      process: { env: {}, platform: 'win32', argv: [executablePath, '--fundsift-install-quit'], execPath: executablePath },
+      require: name => name === 'electron' ? { app }
+        : require(name.startsWith('./') ? path.resolve(__dirname, '..', name) : name)
+    });
+    assert.deepEqual(calls, ['lock', 'quit']);
+  }
 });
 
 function legacyWorkspace(t, options = {}) {
