@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, dialog, session } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, session } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -11,7 +11,8 @@ const { createOperationStatus, sanitizeReceipt } = require('./operation-status.c
 const pagePath = path.resolve(__dirname, '../prototype/index.html');
 const pageURL = pathToFileURL(pagePath).href;
 const schemaPath = path.resolve(__dirname, '../ddl_extract_check.sql');
-let window, worker, workspacePath = null, currentCaseId = null, quitReady = false, quitting = false;
+const iconPath = path.join(__dirname, 'assets/icon.ico');
+let window, tray, worker, workspacePath = null, currentCaseId = null, quitReady = false, quitting = false;
 let settingsPath, smokeConfig;
 let smokeImportIndex = 0;
 let operation = Promise.resolve();
@@ -31,6 +32,31 @@ const singleInstance = installerQuit
   ? app.requestSingleInstanceLock({ installerQuit: true, executablePath: process.execPath })
   : app.requestSingleInstanceLock();
 if (!singleInstance || installerQuit) app.quit();
+
+function showWindow() {
+  if (quitting || !window || window.isDestroyed()) return;
+  if (window.isMinimized()) window.restore();
+  window.show();
+  window.focus();
+}
+
+function createTray() {
+  if (process.platform !== 'win32' || smokeConfig) return;
+  try {
+    tray = new Tray(iconPath);
+    tray.setToolTip('东启勘流');
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: '打开东启勘流', click: showWindow },
+      { type: 'separator' },
+      { label: '退出东启勘流', click: () => app.quit() }
+    ]));
+    tray.on('click', showWindow);
+  } catch (error) {
+    tray?.destroy();
+    tray = undefined;
+    console.warn('无法创建东启勘流托盘图标', error);
+  }
+}
 
 function safeError(error) {
   if (error.code?.startsWith('SQLITE_')) {
@@ -235,16 +261,22 @@ async function start() {
   });
   window = new BrowserWindow({ width: 1440, height: 960, minWidth: 1024, minHeight: 720, show: false,
     title: '东启勘流', backgroundColor: '#ffffff', autoHideMenuBar: true,
-    icon: path.join(__dirname, 'assets/icon.ico'),
+    icon: iconPath,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true,
       ...(smokeConfig ? { offscreen: true, backgroundThrottling: false } : {}) }
+  });
+  createTray();
+  window.on('close', event => {
+    if (quitting || !tray || tray.isDestroyed()) return;
+    event.preventDefault();
+    window.hide();
   });
   window.removeMenu();
   if (smokeConfig) window.webContents.on('console-message', event => { console.error('Renderer:', event.message); });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event, url) => { if (url.split('#')[0] !== pageURL) event.preventDefault(); });
   window.webContents.on('will-attach-webview', event => event.preventDefault());
-  window.once('ready-to-show', () => { if (!smokeConfig) window.show(); });
+  window.once('ready-to-show', () => { if (!smokeConfig && !quitting) window.show(); });
   await window.loadFile(pagePath);
   if (smokeConfig) {
     try {
@@ -267,11 +299,7 @@ app.on('second-instance', (_event, _argv, _workingDirectory, data) => {
     }
     return;
   }
-  if (window && !window.isDestroyed()) {
-    if (window.isMinimized()) window.restore();
-    window.show();
-    window.focus();
-  }
+  showWindow();
 });
 app.on('window-all-closed', () => app.quit());
 app.on('before-quit', event => {
@@ -281,6 +309,7 @@ app.on('before-quit', event => {
   quitting = true;
   operation.then(() => worker.close()).catch(() => {}).finally(() => { quitReady = true; app.quit(); });
 });
+app.on('will-quit', () => { tray?.destroy(); });
 if (singleInstance && !installerQuit) {
   app.whenReady().then(start).catch(error => { dialog.showErrorBox('无法启动东启勘流', safeError(error).message); app.quit(); });
 }

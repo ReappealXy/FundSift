@@ -397,13 +397,40 @@ body.intro-visible .modal-overlay {z-index:30}
   .intro-screen .source dl {column-gap:10px}
 }
 
-.intro-transition #application {position:fixed;inset:0}
+.intro-transition #application {position:fixed;inset:0;background:var(--canvas)}
 .intro-transition .intro-screen {pointer-events:none}
-.intro-departing .intro-screen {animation:intro-page-fade-out 320ms ease both}
+.intro-departing .intro-screen {animation:intro-page-fade-out 720ms ease both}
+
+.intro-departing .intro-screen :is(.ticker,.bar,.lede,.stage,.foot) {
+  animation:intro-part-out 610ms cubic-bezier(.55,.05,.8,.4) both;
+}
+.intro-departing .intro-screen .ticker {--exit-y:-40px}
+.intro-departing .intro-screen .bar {--exit-y:-65px}
+.intro-departing .intro-screen .lede {--exit-x:clamp(-140px,-10vw,-55px);--exit-y:14px}
+.intro-departing .intro-screen .stage {--exit-x:clamp(95px,17vw,240px);--exit-y:-44px;--exit-scale:1.04}
+.intro-departing .intro-screen .foot {--exit-y:42px}
+
+.intro-departing :is(#sidebar,#topbar,#main,#statusbar) {
+  animation:workspace-part-in 420ms 300ms cubic-bezier(.2,.65,.3,1) both;
+}
+.intro-departing #sidebar {--enter-x:-16px}
+.intro-departing #topbar {--enter-y:-12px}
+.intro-departing #main {--enter-y:18px}
+.intro-departing #statusbar {--enter-y:10px}
 
 @keyframes intro-page-fade-out {
-  from {opacity:1}
-  to {opacity:0}
+  0%, 26% {opacity:1}
+  100% {opacity:0}
+}
+
+@keyframes intro-part-out {
+  from {transform:translate(0,0);opacity:1}
+  to {transform:translate(var(--exit-x,0px),var(--exit-y,0px)) scale(var(--exit-scale,1));opacity:0}
+}
+
+@keyframes workspace-part-in {
+  from {transform:translate(var(--enter-x,0px),var(--enter-y,0px));opacity:0}
+  to {transform:translate(0,0);opacity:1}
 }
 
 @media (prefers-reduced-motion:reduce) {

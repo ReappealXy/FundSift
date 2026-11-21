@@ -110,15 +110,18 @@ test('隔离桥只转发允许的状态字段，解绑后不再通知；无任�
   assert.equal(bridge.send, undefined);
 });
 
-test('主进程只向合法主页面发布状态，安装退出等待已排队操作的最终结果', async () => {
+test('关闭窗口隐藏到托盘，从托盘恢复，安装退出等待已排队操作的最终结果', async () => {
   const handlers = new Map(), events = [], actions = [], app = new EventEmitter();
   const installedExe = 'D:\\东启勘流\\FundSift.exe';
-  let window, worker, release, prevented;
+  let window, tray, worker, release, prevented;
   Object.assign(app, { isPackaged: true, setName() {}, requestSingleInstanceLock: () => true, getPath: () => 'synthetic-profile',
     whenReady: () => Promise.resolve(), quit() {
       prevented = false;
       app.emit('before-quit', { preventDefault() { prevented = true; } });
-      if (!prevented) actions.push('quit');
+      if (prevented) return;
+      window.close();
+      app.emit('will-quit');
+      actions.push('quit');
     } });
   class FakeWorker {
     constructor(_schema, options) { worker = this; this.progress = options.onProgress; }
@@ -141,10 +144,29 @@ test('主进程只向合法主页面发布状态，安装退出等待已排队�
       Object.assign(this.webContents, { mainFrame: { url: require('node:url').pathToFileURL(path.resolve(__dirname, '../../prototype/index.html')).href },
         isDestroyed: () => false, send: (_channel, value) => events.push(value), setWindowOpenHandler() {} });
     }
+    isDestroyed() { return this.destroyed; }
+    isMinimized() { return this.minimized; }
+    restore() { this.minimized = false; }
+    show() { this.visible = true; }
+    focus() { this.focused = true; }
+    hide() { this.visible = false; this.focused = false; }
+    close() {
+      let cancelled = false;
+      this.emit('close', { preventDefault() { cancelled = true; } });
+      if (!cancelled) this.destroyed = true;
+    }
     removeMenu() {}
     async loadFile() {}
   }
-  const electron = { app, BrowserWindow: FakeWindow, ipcMain: { handle: (name, handler) => handlers.set(name, handler) }, dialog: {},
+  class FakeTray extends EventEmitter {
+    constructor(icon) { super(); tray = this; assert.equal(path.basename(icon), 'icon.ico'); }
+    setToolTip(label) { this.label = label; }
+    setContextMenu(menu) { this.menu = menu; }
+    isDestroyed() { return Boolean(this.destroyed); }
+    destroy() { this.destroyed = true; }
+  }
+  const electron = { app, BrowserWindow: FakeWindow, Tray: FakeTray, Menu: { buildFromTemplate: template => template },
+    ipcMain: { handle: (name, handler) => handlers.set(name, handler) }, dialog: {},
     session: { defaultSession: { setPermissionRequestHandler() {}, webRequest: { onHeadersReceived() {} } } } };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../main.cjs'), 'utf8'), {
     __dirname: path.resolve(__dirname, '..'), process: { env: {}, platform: 'win32', argv: [installedExe], execPath: installedExe },
@@ -153,6 +175,23 @@ test('主进程只向合法主页面发布状态，安装退出等待已排队�
       : require(name.startsWith('./') ? path.resolve(__dirname, '..', name) : name)
   });
   await tick();
+  assert.equal(tray.label, '东启勘流');
+  assert.deepEqual(Array.from(tray.menu, item => item.label || item.type), ['打开东启勘流', 'separator', '退出东启勘流']);
+  window.emit('ready-to-show');
+  assert.equal(window.visible, true);
+  window.close();
+  assert.equal(window.visible, false);
+  assert.equal(window.isDestroyed(), undefined);
+  tray.emit('click');
+  assert.equal(window.visible && window.focused, true);
+  window.close();
+  tray.menu[0].click();
+  assert.equal(window.visible && window.focused, true);
+  window.close();
+  window.minimized = true;
+  app.emit('second-instance', {}, [], '');
+  assert.equal(window.minimized, false);
+  assert.equal(window.visible && window.focused, true);
   const sender = { sender: window.webContents, senderFrame: window.webContents.mainFrame };
   const bad = await handlers.get('fundsift:get-state')({ ...sender, senderFrame: { url: sender.senderFrame.url } });
   assert.equal(bad.error.code, 'INVALID_SENDER');
@@ -164,6 +203,8 @@ test('主进程只向合法主页面发布状态，安装退出等待已排队�
   assert.deepEqual(actions, ['openWorkspace']);
   worker.progress({ phase: 'backing-up' });
   assert.equal(events.at(-1).phase, 'backing-up');
+  window.close();
+  assert.equal(window.visible, false);
   app.emit('second-instance', {}, [], '', { installerQuit: true, executablePath: 'D:\\旧便携版\\FundSift.exe' });
   assert.equal(prevented, undefined);
   app.emit('second-instance', {}, [], '', { installerQuit: true, executablePath: 'd:/东启勘流/FUNDSIFT.EXE' });
@@ -176,6 +217,8 @@ test('主进程只向合法主页面发布状态，安装退出等待已排队�
   assert.equal((await second).error.code, 'FS_TEST');
   await tick();
   assert.deepEqual(actions, ['openWorkspace', 'createCase', 'close', 'quit']);
+  assert.equal(window.isDestroyed(), true);
+  assert.equal(tray.isDestroyed(), true);
   assert.deepEqual(events.filter(value => !value.active).map(value => [value.operationId, value.phase]), [[1, 'completed'], [2, 'failed']]);
   assert.ok(events.findIndex(value => value.operationId === 2 && value.phase === 'running') >
     events.findIndex(value => value.operationId === 1 && value.phase === 'completed'));

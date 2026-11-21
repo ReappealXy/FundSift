@@ -1,6 +1,7 @@
 (function () {
   'use strict';
   const preferenceKey='fundsift.skipIntro.v1';
+  const departureDuration=720;
   const intro=document.getElementById('intro-screen');
   const application=document.getElementById('application');
   const skipLink=document.getElementById('workspace-skip-link');
@@ -79,12 +80,12 @@
       entering=true;enterButton.disabled=true;intro.inert=true;
       application.hidden=false;application.inert=true;
       document.body.classList.add('intro-transition');
-      // Commit the visible layer before starting the fade.
+      // Commit the visible layers before starting the departure animation.
       void intro.offsetWidth;
       document.body.classList.add('intro-departing');
     }
     document.dispatchEvent(new CustomEvent('fundsift:enter-workspace'));
-    if(animate)transitionTimer=setTimeout(finish,320);else finish();
+    if(animate)transitionTimer=setTimeout(finish,departureDuration);else finish();
   }
   enterButton.addEventListener('click',enter);
   window.FUND_INTRO={show,enter,setSkip,shouldSkip:()=>skip,canRemember:()=>remember,isVisible:()=>!intro.hidden};
