@@ -7,7 +7,7 @@ function sanitizeProgress(value) {
   if (value === undefined) return undefined;
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const result = {};
-  for (const key of ['parsedRows','writtenRows','pendingRows','totalRows']) {
+  for (const key of ['parsedRows','writtenRows','pendingRows','totalRows','fileIndex','fileCount']) {
     if (value[key] === undefined) continue;
     if (!Number.isSafeInteger(value[key]) || value[key] < 0) return null;
     result[key] = value[key];
@@ -19,7 +19,9 @@ function sanitizeProgress(value) {
   }
   if (result.totalRows !== undefined && ['writtenRows','parsedRows','pendingRows'].some(key => result[key] > result.totalRows) ||
       result.pendingRows !== undefined && result.writtenRows !== undefined && result.pendingRows > result.writtenRows ||
-      result.copiedBytes !== undefined && result.totalBytes !== undefined && BigInt(result.copiedBytes) > BigInt(result.totalBytes)) return null;
+      result.copiedBytes !== undefined && result.totalBytes !== undefined && BigInt(result.copiedBytes) > BigInt(result.totalBytes) ||
+      (result.fileIndex !== undefined || result.fileCount !== undefined) &&
+        !(result.fileIndex >= 1 && result.fileIndex <= result.fileCount)) return null;
   return Object.keys(result).length ? result : undefined;
 }
 function sanitizeReceipt(value) {

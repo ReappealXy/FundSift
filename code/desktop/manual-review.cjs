@@ -3,7 +3,7 @@
 const { createHash } = require('node:crypto');
 const { FORMAT_KEY: CCB } = require('./ccb-account.cjs');
 const { FORMAT_KEY: ALIPAY } = require('./alipay-account.cjs');
-const { EFFECTIVE_FLOW_FROM, runCaseTransaction, withCaseReadSnapshot } = require('./hardening.cjs');
+const { activeMaterialPredicate, effectiveFlowFrom, runCaseTransaction, withCaseReadSnapshot } = require('./hardening.cjs');
 const { assertInt64, parseMinor, toWire } = require('./money.cjs');
 const { rawValuesHash } = require('./review-schema.cjs');
 
@@ -34,7 +34,7 @@ function currentFlow(db, flowId) {
   const row = db.prepare(`SELECT f.*,s.file_name AS file_name,s.file_sha256 AS file_sha256,
     (SELECT format_key FROM format_rule WHERE id=f.format_rule_id) AS format_key,
     (b.archive_entry_id IS NULL AND json_type(f.raw_record,'$.values') IS NOT 'array') AS legacy_without_archive,
-    ${rawValuesHash('f')} AS raw_sha256 ${EFFECTIVE_FLOW_FROM} AND f.id=?`).safeIntegers().get(flowId);
+    ${rawValuesHash('f')} AS raw_sha256 ${effectiveFlowFrom(db)} AND f.id=?`).safeIntegers().get(flowId);
   if (!row) fail('FS_REVIEW_SCOPE', '该流水已经不属于当前有效批次，请刷新流水。');
   return row;
 }
@@ -173,6 +173,9 @@ function saveReview(db, record, input) {
     const saved = db.prepare('SELECT * FROM review_event WHERE request_id=?').safeIntegers().get(value.requestId);
     if (saved) {
       if (saved.request_sha256 !== value.digest) fail('FS_REVIEW_REQUEST_CONFLICT', '该请求号已用于另一项复核。请刷新后重新提交。');
+      const activeMaterial = db.prepare(`SELECT 1 FROM source_file s WHERE s.id=? AND ${activeMaterialPredicate(db)}`)
+        .get(saved.source_file_id);
+      if (!activeMaterial) fail('FS_REVIEW_SCOPE', '此材料已移入回收站，恢复后可继续复核。');
       return receipt(saved);
     }
     if (state.data_version.toString() !== value.dataVersion) {
@@ -202,4 +205,4 @@ function listMaterialReviewHistory(db, record, sourceFileId) {
   });
 }
 
-module.exports = { getReviewContext, saveReview, listMaterialReviewHistory };
+module.exports = { getReviewContext, saveReview, listMaterialReviewHistory, supportsRefund, REFUND_REASON };

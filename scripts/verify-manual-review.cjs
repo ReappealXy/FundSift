@@ -6,7 +6,7 @@ const { createHash, randomUUID } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const Excel = require('exceljs');
-const { WorkspaceStore } = require('../code/desktop/storage.cjs');
+const { WorkspaceStore, CASE_SCHEMA_VERSION } = require('../code/desktop/storage.cjs');
 const { DesktopData } = require('../code/desktop/desktop-data.cjs');
 const { EFFECTIVE_FLOW_FROM } = require('../code/desktop/hardening.cjs');
 const { getReviewContext, saveReview } = require('../code/desktop/manual-review.cjs');
@@ -137,7 +137,7 @@ async function run(sourcePath, outputPath) {
     const context = flowId => getReviewContext(store.caseDb, record, String(flowId));
     const snapshot = readSnapshot(store.caseDb);
     assert.deepEqual(counts(snapshot), originalCounts);
-    assert.equal(store.caseDb.pragma('user_version', { simple: true }), 4);
+    assert.equal(store.caseDb.pragma('user_version', { simple: true }), CASE_SCHEMA_VERSION);
     assert.equal(store.caseDb.prepare('SELECT count(*) FROM review_event').pluck().get(), 0);
 
     stage = '核对原件及连续余额';

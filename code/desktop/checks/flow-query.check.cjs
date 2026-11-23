@@ -58,6 +58,7 @@ test('翻页绑定案件和筛选，只有当前done批次与未解除原因可�
   const page = queryFlowPage(db, { caseId: record.id, filters: { status: 'pending' }, limit: 1 });
   assert.equal(page.total, '3');
   assert.equal(page.rows[0].pendingReasons[0].reason_code, 'time_missing');
+  assert.deepEqual(page.rows[0].review, { canNote: false, canResolve: false, hasHistory: false });
   assert.throws(() => queryFlowPage(db, { caseId: record.id, cursor: page.nextCursor }), { code: 'FS_QUERY_CONTEXT' });
   assert.throws(() => queryFlowPage(db, { caseId: 'other' }), { code: 'FS_CASE_IDENTITY' });
   assert.throws(() => queryFlowPage(db, { caseId: record.id, cursor: 'garbage' }), { code: 'FS_QUERY_CURSOR' });

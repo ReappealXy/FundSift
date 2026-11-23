@@ -2,7 +2,7 @@
 
 // Evidence candidates only. This module never merges records or produces an
 // economic total. Missing/contradictory evidence stays visible on each side.
-const { withCaseReadSnapshot } = require('./hardening.cjs');
+const { effectiveFlowFrom, withCaseReadSnapshot } = require('./hardening.cjs');
 const MAX_ROWS = 100000, MAX_CANDIDATES = 200, MAX_RAW_BYTES = 64 * 1024 * 1024;
 const WX = 'wechat-trades-27col-v1', CCB = 'ccb-account-32col-v1';
 function fail(code,message) { throw Object.assign(new Error(message),{code}); }
@@ -40,9 +40,7 @@ function queryRelationCandidates(db,{caseId,limit=100}={}) {
     if (state?.case_uuid !== caseId) fail('FS_CASE_IDENTITY','查询案件与当前数据库不符。');
     const statement = db.prepare(`SELECT f.id,f.source_file_id,f.source_loc,f.txn_time,f.amount,f.currency,f.direction,f.status,
       f.platform,f.acct_no,f.raw_record,s.file_name AS source_file_name
-      FROM fund_flow f JOIN source_file s ON s.id=f.source_file_id AND s.case_id=f.case_id
-      JOIN import_batch b ON b.id=s.current_batch_id AND b.id=f.batch_id AND b.source_file_id=s.id AND b.status='done'
-      WHERE f.case_id=1 ORDER BY f.id LIMIT ?`).safeIntegers();
+      ${effectiveFlowFrom(db)} ORDER BY f.id LIMIT ?`).safeIntegers();
     const records=[];let sourceCount=0,rawBytes=0,scanTruncated=false;
     for(const row of statement.iterate(MAX_ROWS+1)) {
       const bytes=typeof row.raw_record==='string'?Buffer.byteLength(row.raw_record,'utf8'):0;

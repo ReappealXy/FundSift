@@ -70,7 +70,7 @@ function writeWechat(fix) {
   const row = [
     '0000010000000000001','wx-order','large-order','合成名称','出','快捷支付','消费','2026-11-19 08:00:00',
     '101','0','0000002345678901234','bank-link','网联','本方信息','peer\u0001_x0041_\\literal','合成对方',
-    '0934567891234567890','合成银行','peer-link','银联','','非间连','{}','','100','备注','末列'
+    '0934567891234567890','合成银行','peer-link','银联','','非间连','{}','','100','备注','\u200c\u200e末列'
   ];
   const filePath = path.join(fix.root, '合成微信.txt');
   fs.writeFileSync(filePath, [HEADERS, row].map(values => values.join('\t')).join('\r\n') + '\r\n');
@@ -98,7 +98,7 @@ test('真实导入的底稿只取有效批次，回读原文、精确金额、�
   await fix.data.importFile(fix.current.id, { ...fix.approved, filePath: wechat, formatKey: 'wechat-trades-27col-v1' });
   await fix.data.importFile(fix.current.id, { ...ccb, confirmedCny: false, confirmedAt: fix.approved.confirmedAt });
   const context = getWorkpaperContext(fix);
-  assert.match(context.fileName, /^流水核对底稿-格式v3-数据v\d+-\d{8}T\d{9}Z\.xlsx$/);
+  assert.match(context.fileName, /^流水核对底稿-格式v4-数据v\d+-\d{8}T\d{9}Z\.xlsx$/);
   assert.equal(context.totalRows, 8);
   const filePath = path.join(fix.root, context.fileName);
   const result = await exportWorkpaper({ ...fix, filePath, expectedDataVersion: context.dataVersion });
@@ -111,6 +111,15 @@ test('真实导入的底稿只取有效批次，回读原文、精确金额、�
   assert.equal(getWorkpaperContext(fix).dataVersion, context.dataVersion);
 
   const book = await readWorkbook(filePath);
+  const comparison = book.getWorksheet('导入文本核对');
+  assert.deepEqual(comparison.getRow(1).values.slice(6, 8), ['原始值', '修复后']);
+  const remark = comparison.getRows(2, comparison.rowCount - 1).find(row => row.getCell(5).value === '备注2');
+  assert.equal(remark.getCell(6).value, '\\u16:\\u200c\\u200e末列');
+  assert.equal(remark.getCell(7).value, '末列');
+  assert.equal(remark.getCell(7).fill.fgColor.argb, 'FFFFF2CA');
+  const ambiguous = comparison.getRows(2, comparison.rowCount - 1).find(row => row.getCell(8).value === '待核原文');
+  assert.ok(ambiguous);
+  assert.equal(ambiguous.getCell(7).value, null);
   const flows = book.getWorksheet('流水明细'), info = book.getWorksheet('导出说明');
   const indexes = new Map(flows.getRow(1).values.map((header, index) => [header, index]).slice(1));
   const view = (row, name) => flows.getRow(row).getCell(indexes.get(name));
@@ -189,7 +198,7 @@ test('真实导入的底稿只取有效批次，回读原文、精确金额、�
   assert.ok(info.getColumn(2).values.some(value => typeof value === 'string' && value.includes('在 Excel 里改不算复核')));
   assert.ok(info.getColumn(1).values.includes('receiver_amount_mismatch'));
   const formatRow = info.getColumn(1).values.indexOf('底稿格式版本');
-  assert.equal(info.getRow(formatRow).getCell(2).value, 3);
+  assert.equal(info.getRow(formatRow).getCell(2).value, 4);
   assert.ok(info.getColumn(1).values.includes('字段来源表'));
   assert.ok(info.getColumn(2).values.some(value => typeof value === 'string' && /本方标识、对方标识和摘要.*前导制表符/u.test(value)));
   const counted = ['标为关闭或未完成', '有收付记载', '记载不足以判断']

@@ -43,7 +43,7 @@ test('空工作区、建案、每案目录与关闭重开后持久化', async t 
   assert.ok(fs.statSync(path.join(root, 'cases', first.id, 'exports')).isDirectory());
   assert.doesNotThrow(() => JSON.stringify(first));
   const db = new Database(casePath(root, first.id));
-  assert.equal(db.pragma('user_version', { simple: true }), 4);
+  assert.equal(db.pragma('user_version', { simple: true }), 5);
   assert.equal(db.pragma('journal_mode', { simple: true }), 'wal');
   assert.equal(db.prepare('SELECT case_no FROM case_info WHERE id = 1').get().case_no, 'TEST-001');
   db.close();
@@ -53,6 +53,34 @@ test('空工作区、建案、每案目录与关闭重开后持久化', async t 
   assert.equal(reopened.currentCaseId, first.id);
   assert.equal(reopened.cases[0].id, first.id);
   assert.equal((await store.openCase(first.id)).number, 'TEST-001');
+});
+
+test('删除当前案件后重开不选中该案，恢复时保留案件编号与档案', async t => {
+  const { root, store } = setup(t);
+  await store.openWorkspace(root);
+  const first = await store.createCase({ name: '回收站测试案', number: 'RECYCLE-1' });
+  const second = await store.createCase({ name: '在办案件', number: 'RECYCLE-2' });
+  await store.openCase(first.id);
+  const archive = path.join(path.dirname(casePath(root, first.id)), 'archive', 'sample.txt');
+  fs.writeFileSync(archive, 'kept');
+  const removed = await store.removeCase(first.id);
+  assert.equal(removed.currentCaseId, null);
+  assert.equal(store.caseDb, null);
+  assert.deepEqual(removed.cases.map(item => item.id), [second.id]);
+  assert.deepEqual(removed.removedCases.map(item => item.id), [first.id]);
+  assert.ok(removed.removedCases[0].removedAt);
+  assert.deepEqual(await store.removeCase(first.id), removed);
+  await assert.rejects(() => store.openCase(first.id), { code: 'FS_CASE_REMOVED' });
+  await assert.rejects(() => store.createCase({ name: '重复编号', number: 'RECYCLE-1' }), { code: 'FS_CASE_DUPLICATE' });
+  store.close();
+  assert.equal((await store.openWorkspace(root)).currentCaseId, second.id);
+  assert.equal(store.listRemovedCases()[0].id, first.id);
+  const restored = await store.restoreCase(first.id);
+  assert.equal(restored.currentCaseId, second.id);
+  assert.deepEqual(restored.removedCases, []);
+  assert.ok(restored.cases.some(item => item.id === first.id && item.available));
+  assert.equal((await store.openCase(first.id)).number, first.number);
+  assert.equal(fs.readFileSync(archive, 'utf8'), 'kept');
 });
 
 test('编号工作区内仅ASCII大小写判重，名称可重名，输入边界不创建目录', async t => {

@@ -287,5 +287,5 @@ test('备份后故障没有虚假的升级阶段且数据库回滚；观察者�
   assert.equal(db.pragma('user_version', { simple: true }), 1); db.close();
   const second = legacyWorkspace(t, { onProgress() { throw new Error('feedback gone'); } });
   await second.store.openWorkspace(second.root);
-  assert.equal(second.store.catalog.pragma('user_version', { simple: true }), 2);
+  assert.equal(second.store.catalog.pragma('user_version', { simple: true }), 3);
 });

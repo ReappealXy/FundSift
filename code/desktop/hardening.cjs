@@ -19,6 +19,19 @@ const EFFECTIVE_FLOW_FROM = `FROM fund_flow f
     AND b.source_file_id=s.id AND b.case_id=f.case_id AND b.status='done'
   WHERE f.case_id=1`;
 
+function installCaseV5(db) {
+  db.exec('ALTER TABLE source_file ADD COLUMN removed_at TEXT');
+}
+
+function activeMaterialPredicate(db, alias = 's') {
+  // Legacy validation and migration still run against schemas without the column.
+  return db.pragma('user_version', { simple: true }) >= 5 ? `${alias}.removed_at IS NULL` : '1=1';
+}
+
+function effectiveFlowFrom(db) {
+  return `${EFFECTIVE_FLOW_FROM} AND ${activeMaterialPredicate(db)}`;
+}
+
 const AUX_SCHEMA = `
   CREATE TABLE case_data_state (
     id INTEGER PRIMARY KEY CHECK(id=1), case_uuid TEXT NOT NULL,
@@ -43,7 +56,7 @@ function remember(db) {
   });
 }
 
-function fileDiagnostics(db) {
+function fileDiagnostics(db, { all = false } = {}) {
   const rows = db.prepare(`SELECT s.id,s.file_name,s.case_id,s.current_batch_id,s.first_batch_id,s.status,
       b.id AS target_id,b.case_id AS batch_case,b.source_file_id AS batch_file,b.status AS batch_status,
       b.total_rows,b.imported_rows,b.skipped_rows,
@@ -53,6 +66,7 @@ function fileDiagnostics(db) {
     FROM source_file s
     LEFT JOIN import_batch b ON b.id=s.current_batch_id
     LEFT JOIN import_batch first ON first.id=s.first_batch_id
+    WHERE ${all ? '1=1' : activeMaterialPredicate(db)}
     ORDER BY s.id`).all();
   const diagnostics = [];
   for (const row of rows) {
@@ -123,7 +137,7 @@ function validateCaseV1(db, record) {
     const row = db.prepare(sql).get();
     if (row) fail('FS_CASE_DATA', `${message}（记录 ${row.id}），已停止操作；不会自动修正或删除。`);
   }
-  const invalid = fileDiagnostics(db).diagnostics.find(item => !['not_published','batch_counts_missing','latest_import_failed'].includes(item.code));
+  const invalid = fileDiagnostics(db, { all: true }).diagnostics.find(item => !['not_published','batch_counts_missing','latest_import_failed'].includes(item.code));
   if (invalid) fail('FS_CASE_DATA', `材料“${invalid.fileName}”（${invalid.fileId}）、批次 ${invalid.batchId ?? '空'}：${invalid.message}`);
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='format_rule_config'").get()) {
     require('./foundation.cjs').validateFoundationData(db);
@@ -272,7 +286,7 @@ function refreshSummary(db, record, { businessChanged = false, timestamp = new D
   // published yet. Public reads still show unknown totals until all sources are
   // complete; retaining this subtotal permits a later source-scoped publication.
   const values = db.prepare(`SELECT count(*) AS flows,
-      coalesce(sum(CASE WHEN f.status='pending' THEN 1 ELSE 0 END),0) AS pending ${EFFECTIVE_FLOW_FROM}`).get();
+      coalesce(sum(CASE WHEN f.status='pending' THEN 1 ELSE 0 END),0) AS pending ${effectiveFlowFrom(db)}`).get();
   if (businessChanged) db.prepare("UPDATE case_data_state SET updated_at=?,time_source='business' WHERE id=1").run(timestamp);
   const state = db.prepare('SELECT * FROM case_data_state WHERE id=1').get();
   if (!state || state.case_uuid !== record.id) fail('FS_CASE_IDENTITY', '统计状态的案件身份不一致。');
@@ -434,7 +448,7 @@ function installScopeGuards(db, scope) {
 }
 
 function scopedContribution(db, scope) {
-  const from = EFFECTIVE_FLOW_FROM.replace('fund_flow f', scope.source
+  const from = effectiveFlowFrom(db).replace('fund_flow f', scope.source
     ? 'fund_flow f INDEXED BY idx_ff_source_batch' : 'fund_flow f NOT INDEXED');
   return db.prepare(`SELECT count(*) AS flows,
     coalesce(sum(CASE WHEN f.status='pending' THEN 1 ELSE 0 END),0) AS pending
@@ -555,5 +569,6 @@ function withCaseReadSnapshot(db, callback) {
   }
 }
 
-module.exports = { installCaseV2, validateCaseV1, readSummary, refreshSummary, rememberCaseState: remember,
-  beginCaseMutation, runCaseTransaction, runCaseIntegrityTransaction, withCaseReadSnapshot, EFFECTIVE_FLOW_FROM };
+module.exports = { installCaseV2, installCaseV5, validateCaseV1, readSummary, refreshSummary, rememberCaseState: remember,
+  beginCaseMutation, runCaseTransaction, runCaseIntegrityTransaction, withCaseReadSnapshot,
+  activeMaterialPredicate, effectiveFlowFrom, EFFECTIVE_FLOW_FROM };

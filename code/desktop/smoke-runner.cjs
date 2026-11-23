@@ -72,7 +72,7 @@ async function run({ app, window, worker, config, getState, saveSettings, setWor
       const backups = await fs.readdir(path.join(folder, 'backup'));
       verify(backups.length === 1, 'one versioned backup for ' + path.basename(folder));
       const manifest = JSON.parse(await fs.readFile(path.join(folder, 'backup', backups[0], 'manifest.json'), 'utf8'));
-      const targetVersion = folder === config.workspace ? 2 : 4;
+      const targetVersion = folder === config.workspace ? 3 : 5;
       verify(manifest.result === 'upgraded' && manifest.targetVersion === targetVersion && /^[0-9a-f]{64}$/.test(manifest.sha256), 'verified backup manifest for ' + manifest.kind);
     }
     await getState();
@@ -144,7 +144,7 @@ async function run({ app, window, worker, config, getState, saveSettings, setWor
     await enterIntro();
   }
   await js('document.querySelector("[data-action=nav][data-route=materials]").click()');
-  await wait('document.querySelector(".desktop-materials .feature-status") !== null && !document.querySelector(".desktop-materials button").disabled');
+  await wait('document.querySelector("[data-action=desktop-batch-files]:not(:disabled)") !== null');
   verify(await js('document.querySelector(".desktop-materials").textContent.includes("微信 27 列 TXT") && document.querySelector(".preview-note").textContent.includes("完整 G0 尚未完成")'), 'materials names exact preview templates and G0 boundary');
   verify(await js('Boolean(document.querySelector("[data-action=desktop-import]")) && !document.querySelector("#application [data-action=pick-files],#application [data-action=do-export]")'), 'desktop material uses real native import only');
   if(config.phase==='create'){
@@ -177,6 +177,7 @@ async function run({ app, window, worker, config, getState, saveSettings, setWor
     verify(await js('document.querySelectorAll(".desktop-materials tbody tr").length===4'), 'three published materials and the failed material survive reopen');
     await js('document.querySelector("[data-action=nav][data-route=flows]").click()');
     await wait('document.querySelectorAll(".desktop-ledger tbody tr").length===6');
+    verify(await js('Array.from(document.querySelectorAll(".desktop-ledger th"),th=>th.textContent.trim()).includes("交易单号") && document.querySelector(".desktop-ledger th").textContent.length > 0'), 'desktop ledger exposes individual evidence columns');
     verify(await js('document.querySelector(".desktop-ledger").textContent.includes("-1.01") && !document.querySelector("[data-action=confirm-amount]")'), 'real DB amount is precise and desktop uses only its real review controls');
     await js('document.querySelector("[data-action=desktop-source]").click()');
     await wait('document.querySelector(".raw-evidence tbody tr") !== null');
@@ -196,7 +197,7 @@ async function run({ app, window, worker, config, getState, saveSettings, setWor
       await js('document.querySelector("#toast-root").replaceChildren()');
       window.setContentSize(1024,720);
       await openReview(refund);
-      await js('document.querySelector("[data-action=desktop-review-resolve]").click()');
+      verify(await js('Boolean(document.querySelector("#manual-review-amount"))'), 'refund action opens the amount and direction form directly');
       await js(`document.querySelector('#manual-review-operator').value='合成验收员';
         document.querySelector('#manual-review-evidence').value='合成余额由 20.12 变为 21.12';
         document.querySelector('#manual-review-amount').value='1.00';
@@ -213,6 +214,30 @@ async function run({ app, window, worker, config, getState, saveSettings, setWor
       await js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
       verify(await js('document.documentElement.scrollWidth<=innerWidth && document.querySelector(".desktop-ledger").closest(".table-scroll").clientWidth < document.querySelector(".desktop-ledger").scrollWidth'), '1024 layout confines wide ledger scrolling to table');
       verify(await js('(()=>{const button=document.querySelector("[data-action=desktop-source]");const clip=button.closest(".table-scroll").getBoundingClientRect();const rect=button.getBoundingClientRect();return rect.left>=clip.left && rect.right<=clip.right;})()'), '1024 layout keeps the first original-record action visible');
+      verify(await js(`(() => {
+        const scroll=document.querySelector('.desktop-ledger-scroll'), workspace=document.querySelector('#main');
+        const freeze=document.querySelector('#desktop-freeze-column');
+        freeze.value='owner'; freeze.dispatchEvent(new Event('change',{bubbles:true}));
+        const header=document.querySelector('th.ledger-owner'), before=header.getBoundingClientRect();
+        const grip=header.querySelector('button');
+        grip.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true,cancelable:true}));
+        scroll.scrollLeft=250;
+        const after=header.getBoundingClientRect();
+        const noOuterScroll=workspace.scrollHeight===workspace.clientHeight;
+        freeze.value=''; freeze.dispatchEvent(new Event('change',{bubbles:true}));
+        scroll.scrollLeft=0;
+        const sidebar=document.querySelector('#sidebar'), wide=sidebar.getBoundingClientRect().width;
+        document.querySelector('#sidebar-toggle').click();
+        const collapsed=sidebar.getBoundingClientRect().width<wide;
+        document.querySelector('#sidebar-toggle').click();
+        return noOuterScroll && before.left===after.left && after.width>before.width && collapsed;
+      })()`), 'ledger shares one scroll area, keeps frozen columns aligned after resize, and supports sidebar collapse');
+      window.setContentSize(2300, 1050);
+      await js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+      verify(await js('document.querySelector(".desktop-flows").getBoundingClientRect().width > 1800 && document.querySelector("#main").clientHeight === document.querySelector("#main").scrollHeight'),
+        'maximized ledger uses the wide workspace with no second scroll area');
+      window.setContentSize(1024,720);
+      await js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
       await fs.writeFile(config.screenshot.replace('.png','-flows1024.png'),(await window.webContents.capturePage()).toPNG());
       await js('document.querySelector("[data-action=desktop-source]").click()');
       await wait('document.querySelector(".raw-evidence tbody tr") !== null');
@@ -226,11 +251,14 @@ async function run({ app, window, worker, config, getState, saveSettings, setWor
       await js('document.querySelector("[data-action=desktop-export-workpaper]").click()');
       await wait('document.querySelector(".workpaper-receipt") !== null');
       const exported = await fs.readdir(config.exportFolder);
-      verify(exported.length === 1 && /^流水核对底稿-格式v3-数据v\d+-\d{8}T\d{9}Z\.xlsx$/.test(exported[0]), 'renderer exports one format-v3 XLSX and no temporary file');
+      verify(exported.length === 1 && /^流水核对底稿-格式v4-数据v\d+-\d{8}T\d{9}Z\.xlsx$/.test(exported[0]), 'renderer exports one format-v4 XLSX and no temporary file');
       const workbook = new (require('exceljs').Workbook)();
       const workpaper = path.join(config.exportFolder, exported[0]);
       await workbook.xlsx.readFile(workpaper);
       verify(workbook.getWorksheet('流水明细')?.rowCount === 7 && workbook.getWorksheet('导出说明'), 'packaged export reopens with six effective records and the explanation sheet');
+      const comparison = workbook.getWorksheet('导入文本核对');
+      verify(comparison?.getRow(1).getCell(6).value === '原始值' && comparison.getRow(1).getCell(7).value === '修复后',
+        'packaged export includes adjacent original and repaired values');
       const ledger = workbook.getWorksheet('流水明细');
       const headers = ledger.getRow(1).values;
       verify(['原始金额单位', '原件收付记载', '原件记载说明', '摘要', '交易类型', '本方名称', '对方名称', '是否计入经济收支'].every(header => headers.includes(header)), 'reopened workbook includes transfer and source evidence columns');
@@ -289,7 +317,66 @@ async function run({ app, window, worker, config, getState, saveSettings, setWor
     const source = await worker.request('readFlowSource', second.id, { flowId:flows.rows[0].id, dataVersion:flows.dataVersion });
     verify(source.savedDerivation.internal_transfer.amount_minor === '428' && source.savedDerivation.internal_transfer.economic_inclusion === false,
       'published rule and exact original magnitude can be verified by desktop source lookup');
+    const click = selector => js(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    await click('[data-action=nav][data-route=materials]');
+    await wait('document.querySelector(".desktop-materials [data-bulk-id]") && !document.querySelector("#desktop-bulk-all").disabled');
+    await click('.desktop-materials [data-bulk-id]');
+    await wait('document.querySelector("[data-action=desktop-remove-selected]:not(:disabled)")');
+    await click('[data-action=desktop-remove-selected]');
+    await click('[data-action=desktop-confirm-bulk-remove]');
+    await wait('!document.querySelector(".modal") && document.querySelectorAll(".desktop-materials tbody tr").length===0');
+    verify((await worker.request('queryFlows', second.id)).total === '0', 'removing a material hides its published flow');
+    await click('[data-action=nav][data-route=trash]');
+    await wait('document.querySelector("[data-action=desktop-recycle-restore]:not(:disabled)")');
+    await click('[data-action=desktop-recycle-restore]');
+    await wait('document.querySelector(".desktop-recycle .empty-state h3")?.textContent === "回收站为空"');
+    await click('[data-action=nav][data-route=materials]');
+    await wait('document.querySelectorAll(".desktop-materials tbody tr").length===1');
+    verify((await worker.request('listMaterials', second.id)).materials[0].currentBatchId === after.currentBatchId,
+      'restoring material republishes its original current batch');
+    await click('[data-action=desktop-review-material-history]');
+    await wait('document.querySelector(".manual-review-history")?.textContent.includes("旧批次核查说明")');
+    await click('.modal-head [data-action=close-modal]');
+    await click('[data-action=desktop-batch-folder]');
+    await wait('document.querySelectorAll(".desktop-batch-choice").length===3');
+    verify(await js('document.querySelector(".desktop-batch-table").textContent.includes("nested")'), 'batch preview finds files in nested folders');
+    await click('[data-action=desktop-run-batch]');
+    await wait('document.querySelector("#modal-title")?.textContent==="批量导入结果"');
+    verify(await js('(() => { const text=document.querySelector(".desktop-batch-table").textContent;return ["已导入","重复","失败"].every(value=>text.includes(value)); })()'),
+      'one batch reports independent success, duplicate and failure from real imports');
+    await click('.modal-head [data-action=close-modal]');
+    await click('[data-action=nav][data-route=home]');
+    await click(`[data-bulk-id="${second.id}"]`);
+    await click('[data-action=desktop-remove-selected]');
+    await click('[data-action=desktop-confirm-bulk-remove]');
+    await wait('!document.querySelector(".modal") && document.querySelectorAll(".desktop-case-table tbody tr").length===1');
+    verify(!(await getState()).currentCaseId, 'removing the current case clears the active case');
+    await click('[data-action=nav][data-route=trash]');
+    await wait('document.querySelector("[data-action=desktop-recycle-restore]:not(:disabled)")');
+    await click('[data-action=desktop-recycle-restore]');
+    await wait('document.querySelector(".desktop-recycle .empty-state h3")?.textContent === "回收站为空"');
+    await click('[data-action=nav][data-route=home]');
+    await wait('document.querySelectorAll(".desktop-case-table tbody tr").length===2');
+    await chooseCase(second);
+    verify((await worker.request('queryFlows', second.id)).total === '3', 'restored case retains original and batch-imported flows');
     await chooseCase(first);
+    const third = await worker.request('createCase', { name: '待清空合成案件', number: 'M0-SMOKE-TRASH' });
+    await worker.request('setRecycleCases', [third.id], false);
+    await worker.request('openCase', second.id);
+    const published = (await worker.request('listMaterials', second.id)).materials.find(material => material.currentBatchId && material.id !== after.id);
+    await worker.request('setRecycleMaterials', second.id, [published.id], false);
+    const failed = (await worker.request('listMaterials', second.id)).materials.find(material => material.latestBatchStatus === 'failed');
+    await worker.request('setRecycleMaterials', second.id, [failed.id], false);
+    await worker.request('openCase', first.id);
+    await click('[data-action=nav][data-route=trash]');
+    await wait('document.querySelectorAll(".desktop-recycle tbody tr").length === 3 && !document.querySelector("[data-action=desktop-empty-recycle]").disabled');
+    await click('[data-action=desktop-empty-recycle]');
+    await wait('document.querySelector(".desktop-recycle .empty-state h3")?.textContent === "回收站为空"');
+    const emptyBin = await worker.request('listRecycleBin');
+    verify(!emptyBin.cases.length && !emptyBin.materials.length && !emptyBin.unavailable.length, 'cleaning the recycle bin removes cases and both published and failed materials');
+    await worker.request('openCase', second.id);
+    verify((await worker.request('queryFlows', second.id)).total === '1', 'permanent deletion preserves the active material');
+    await worker.request('openCase', first.id);
   }
   // Navigate back to the real workbench before capturing the shipped interface.
   await js('document.querySelector("[data-action=nav][data-route=home]")?.click()');

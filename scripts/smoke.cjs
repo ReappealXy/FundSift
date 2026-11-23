@@ -53,6 +53,12 @@ async function seed(script, ...args) {
   const importDirectory = path.join(temp, 'import-fixtures');
   const importFixtures = createImportFixtures(importDirectory);
   const failedFixture = createFailedImportFixture(importDirectory);
+  const batchFolder = path.join(temp, 'batch-fixtures');
+  const batchNested = path.join(batchFolder, 'nested');
+  await fs.mkdir(batchNested, { recursive: true });
+  await fs.copyFile(importFixtures[1].filePath, path.join(batchFolder, 'first.txt'));
+  await fs.copyFile(importFixtures[1].filePath, path.join(batchNested, 'duplicate.txt'));
+  await fs.copyFile(failedFixture.filePath, path.join(batchNested, 'malformed.csv'));
   const exportFolder = path.join(temp, 'export-output');
   await fs.mkdir(exportFolder);
   const legacyWorkspace = path.join(temp, 'legacy-workspace'), legacyProfile = path.join(temp, 'legacy-profile');
@@ -64,7 +70,7 @@ async function seed(script, ...args) {
     if (phase === 'reopen') await seed('scripts/import-smoke-fixtures.cjs', workspace, importDirectory);
     const config = { phase, profile, workspace, ...(phase === 'create' ? {
       importFixtures: [...importFixtures, importFixtures[0], failedFixture], exportFolder
-    } : {}), result: path.join(output, phase + '.json'), screenshot: path.join(output, phase + '.png') };
+    } : {batchFolder}), result: path.join(output, phase + '.json'), screenshot: path.join(output, phase + '.png') };
     results.push(await launch(config, path.join(temp, phase + '.json')));
     console.log('PASS ' + (packaged ? 'packaged ' : '') + phase);
   }

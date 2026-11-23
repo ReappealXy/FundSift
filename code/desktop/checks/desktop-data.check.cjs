@@ -71,6 +71,46 @@ test('回源绑定版本与当前批次，跨案查询和旧批次隐藏，重�
   assert.throws(() => f.data.listMaterials(f.c.id),{code:'FS_CASE_CONTEXT'});
 });
 
+test('材料移入回收站同时更新统计、查询和底稿，重开恢复同一批次及复核说明', async t => {
+  const f = await fixture(t);
+  const imported = await f.data.importFile(f.c.id, f.input);
+  const original = imported.materials.materials[0];
+  const pending = f.data.queryFlows(f.c.id, { filters: { status: 'pending' } });
+  const review = await f.data.getReview(f.c.id, pending.rows[0].id);
+  f.data.saveReview(f.c.id, { flowId: review.flowId, dataVersion: review.dataVersion, requestId: 'recycle-note',
+    action: 'note', operator: '合成审核', evidence: '回收站恢复保留原复核说明' });
+  const firstPage = f.data.queryFlows(f.c.id, { limit: 1 });
+  const before = f.data.getWorkpaperContext(f.c.id);
+  const removal = f.data.removeMaterial(f.c.id, original.id);
+  assert.deepEqual(removal.case.stats, { files: 0, flows: 0, pending: 0 });
+  assert.deepEqual(removal.materials.materials, []);
+  assert.equal(removal.removedMaterials.materials[0].id, original.id);
+  assert.ok(removal.removedMaterials.materials[0].removedAt);
+  assert.deepEqual(f.data.removeMaterial(f.c.id, original.id), removal);
+  assert.equal(f.data.queryFlows(f.c.id).total, '0');
+  assert.equal(f.data.queryRelations(f.c.id).eligibleRows, '0');
+  assert.equal(f.data.getWorkpaperContext(f.c.id).totalRows, 0);
+  assert.throws(() => f.data.queryFlows(f.c.id, { limit: 1, cursor: firstPage.nextCursor }), { code: 'FS_QUERY_STALE' });
+  await assert.rejects(() => f.data.readFlowSource(f.c.id,
+    { flowId: firstPage.rows[0].id, dataVersion: firstPage.dataVersion }), { code: 'FS_QUERY_STALE' });
+  await assert.rejects(() => f.data.readFlowSource(f.c.id,
+    { flowId: firstPage.rows[0].id, dataVersion: removal.materials.dataVersion }), { code: 'FS_IMPORT_SOURCE' });
+  await assert.rejects(() => f.data.exportWorkpaper(f.c.id, path.join(f.root, 'stale.xlsx'), before.dataVersion),
+    { code: 'FS_EXPORT_STALE' });
+  await assert.rejects(() => f.data.importFile(f.c.id, f.input), { code: 'FS_IMPORT_REMOVED' });
+  f.store.close();
+  await f.store.openWorkspace(f.root);
+  assert.equal(f.data.listRemovedMaterials(f.c.id).materials[0].id, original.id);
+  const restored = f.data.restoreMaterial(f.c.id, original.id);
+  assert.deepEqual(restored.case.stats, { files: 1, flows: 2, pending: 1 });
+  assert.deepEqual(restored.removedMaterials.materials, []);
+  assert.equal(restored.materials.materials[0].currentBatchId, original.currentBatchId);
+  assert.equal(restored.materials.materials[0].reviewedRows, '1');
+  const current = await f.data.readFlowSource(f.c.id,
+    { flowId: firstPage.rows[0].id, dataVersion: restored.materials.dataVersion });
+  assert.equal(current.values[10], '92233720368547758.07');
+});
+
 test('微信已批准规则按整数分写入，重复表头按位置回源，平台身份与卡号分别保留', async t => {
   const f = await fixture(t), {HEADERS:wxHeaders} = require('../wechat-trades.cjs');
   const row=['platform-user','wx-order','large-order','合成名称','出','快捷支付','消费','2026-11-19 08:00:00',

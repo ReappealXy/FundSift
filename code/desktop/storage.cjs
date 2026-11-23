@@ -6,12 +6,13 @@ const path = require('node:path');
 const { randomUUID, createHash } = require('node:crypto');
 const Database = require('better-sqlite3');
 const { migrate, schemaSignature, assertKnownSchema } = require('./migrations.cjs');
-const { installCaseV2, validateCaseV1, readSummary } = require('./hardening.cjs');
+const { installCaseV2, installCaseV5, validateCaseV1, readSummary } = require('./hardening.cjs');
 const { installCaseV3, configureFoundation } = require('./foundation.cjs');
 const { installCaseV4 } = require('./review-schema.cjs');
+const { listRemovedMaterials, purgeRemovedMaterials, cleanPurgeJournal } = require('./recycle-bin.cjs');
 
-const WORKSPACE_SCHEMA_VERSION = 2;
-const CASE_SCHEMA_VERSION = 4;
+const WORKSPACE_SCHEMA_VERSION = 3;
+const CASE_SCHEMA_VERSION = 5;
 const WORKSPACE_APP_ID = 0x46535753;
 const CASE_APP_ID = 0x46534341;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -28,6 +29,7 @@ const CATALOG_SCHEMA = `
   );
 `;
 const CATALOG_V2_SQL = 'CREATE UNIQUE INDEX idx_workspace_case_number_nocase ON workspace_case(case_no COLLATE NOCASE)';
+const CATALOG_V3_SQL = 'ALTER TABLE workspace_case ADD COLUMN removed_at TEXT';
 const BASE_SCHEMA = fs.readFileSync(path.resolve(__dirname, '../ddl_extract_check.sql'), 'utf8');
 const signatureCache = new Map();
 
@@ -38,7 +40,8 @@ function knownSignature(kind, version) {
   try {
     if (kind === 'workspace') {
       sample.exec(CATALOG_SCHEMA);
-      if (version === 2) sample.exec(CATALOG_V2_SQL);
+      if (version >= 2) sample.exec(CATALOG_V2_SQL);
+      if (version >= 3) sample.exec(CATALOG_V3_SQL);
     } else {
       sample.exec(BASE_SCHEMA);
       sample.exec('CREATE TABLE desktop_case_identity (id INTEGER PRIMARY KEY CHECK (id = 1), case_uuid TEXT NOT NULL UNIQUE)');
@@ -52,6 +55,7 @@ function knownSignature(kind, version) {
           sample.transaction(() => installCaseV3(sample, record))();
         }
         if (version >= 4) sample.transaction(() => installCaseV4(sample))();
+        if (version >= 5) sample.transaction(() => installCaseV5(sample))();
       }
     }
     const signature = schemaSignature(sample);
@@ -306,21 +310,26 @@ class WorkspaceStore {
       nextCatalog = new Database(catalogPath, { fileMustExist: exists });
       if (exists) {
         const version = nextCatalog.pragma('user_version', { simple: true });
-        if (![1, WORKSPACE_SCHEMA_VERSION].includes(version) || nextCatalog.pragma('application_id', { simple: true }) !== WORKSPACE_APP_ID) {
+        if (![1, 2, WORKSPACE_SCHEMA_VERSION].includes(version) || nextCatalog.pragma('application_id', { simple: true }) !== WORKSPACE_APP_ID) {
           throw failure('FS_WORKSPACE_VERSION', '该工作区版本尚不支持，请选择兼容的数据目录，不能直接覆盖。');
         }
         assertKnownSchema(nextCatalog, knownSignature('workspace', version), '工作区');
-        if (version === 1) {
+        if (version < WORKSPACE_SCHEMA_VERSION) {
           configure(nextCatalog);
           await migrate({ db: nextCatalog, filePath: catalogPath, kind: '工作区', identity: { workspacePath: rootReal },
-            expectedSchema: knownSignature('workspace', 1), validate: validateCatalog,
-            install: database => database.exec(CATALOG_V2_SQL), hooks: this.migrationHooks, onProgress: this.onProgress });
+            expectedSchema: knownSignature('workspace', version), validate: validateCatalog, targetVersion: WORKSPACE_SCHEMA_VERSION,
+            install: database => {
+              if (version === 1) database.exec(CATALOG_V2_SQL);
+              database.exec(CATALOG_V3_SQL);
+            },
+            hooks: this.migrationHooks, onProgress: this.onProgress });
         }
       } else {
         configure(nextCatalog);
         nextCatalog.transaction(() => {
           nextCatalog.exec(CATALOG_SCHEMA);
           nextCatalog.exec(CATALOG_V2_SQL);
+          nextCatalog.exec(CATALOG_V3_SQL);
           nextCatalog.pragma(`application_id = ${WORKSPACE_APP_ID}`);
           nextCatalog.pragma(`user_version = ${WORKSPACE_SCHEMA_VERSION}`);
         })();
@@ -362,11 +371,12 @@ class WorkspaceStore {
     return path.join(this.workspacePath, 'cases', id);
   }
 
-  _caseRecord(id) {
+  _caseRecord(id, { includeRemoved = false } = {}) {
     this._assertOpen();
     this._casePath(id);
     const record = this.catalog.prepare('SELECT * FROM workspace_case WHERE id = ?').get(id);
     if (!record) throw failure('FS_CASE_NOT_FOUND', '未找到该案件，请刷新案件列表。');
+    if (record.removed_at && !includeRemoved) throw failure('FS_CASE_REMOVED', '该案件已移入回收站，请恢复后再打开。');
     return record;
   }
 
@@ -385,7 +395,7 @@ class WorkspaceStore {
     try {
       db = new Database(filePath, { fileMustExist: true });
       const version = db.pragma('user_version', { simple: true });
-      if (![1, 2, 3, CASE_SCHEMA_VERSION].includes(version) || db.pragma('application_id', { simple: true }) !== CASE_APP_ID) {
+      if (![1, 2, 3, 4, CASE_SCHEMA_VERSION].includes(version) || db.pragma('application_id', { simple: true }) !== CASE_APP_ID) {
         throw failure('FS_CASE_VERSION', '该案件数据库版本尚不支持，不能直接覆盖或升级。');
       }
       assertKnownSchema(db, knownSignature('case', version), '案件数据库');
@@ -398,7 +408,8 @@ class WorkspaceStore {
           install: database => {
             if (version === 1) installCaseV2(database, record);
             if (version < 3) installCaseV3(database, record);
-            installCaseV4(database);
+            if (version < 4) installCaseV4(database);
+            installCaseV5(database);
           },
           hooks: this.migrationHooks, onProgress: this.onProgress });
       }
@@ -421,7 +432,8 @@ class WorkspaceStore {
     this._assertOpen();
     try {
       const result = [];
-      for (const record of this.catalog.prepare('SELECT * FROM workspace_case ORDER BY last_opened_at DESC, updated_at DESC, id').all()) {
+      for (const record of this.catalog.prepare(`SELECT * FROM workspace_case WHERE removed_at IS NULL
+        ORDER BY last_opened_at DESC, updated_at DESC, id`).all()) {
         let db;
         try {
           db = await this._openCaseDatabase(record);
@@ -436,6 +448,131 @@ class WorkspaceStore {
       }
       return result;
     } catch (error) { throw wrap(error, 'FS_CASE_LIST', '案件列表读取失败，请检查数据存放文件夹。'); }
+  }
+
+  listRemovedCases() {
+    this._assertOpen();
+    return this.catalog.prepare(`SELECT id,case_name AS name,case_no AS number,removed_at AS removedAt
+      FROM workspace_case WHERE removed_at IS NOT NULL ORDER BY removed_at DESC,id`).all();
+  }
+
+  async listRecycleBin() {
+    const cases = this.listRemovedCases();
+    const materials = [];
+    const unavailable = [];
+    const active = this.catalog.prepare('SELECT * FROM workspace_case WHERE removed_at IS NULL ORDER BY id').all();
+    for (const record of active) {
+      let db;
+      try {
+        db = await this._openCaseDatabase(record);
+        const directory = this._casePath(record.id);
+        cleanPurgeJournal(db, directory);
+        materials.push(...listRemovedMaterials(db).map(row => ({
+          ...row, caseId: record.id, caseName: record.case_name, caseNumber: record.case_no
+        })));
+      } catch (_) {
+        unavailable.push(record.case_name);
+      } finally {
+        db?.close();
+      }
+    }
+    return { cases, materials, unavailable };
+  }
+
+  async setRecycleCases(ids, restore) {
+    if (!Array.isArray(ids) || !ids.length || ids.length > 10000 || new Set(ids).size !== ids.length) {
+      throw failure('FS_CASE_ID', '请重新选择要处理的案件。');
+    }
+    const records = ids.map(id => this._caseRecord(id, { includeRemoved: true }));
+    if (restore) for (const record of records) {
+      const db = await this._openCaseDatabase(record);
+      db.close();
+    }
+    const update = this.catalog.prepare('UPDATE workspace_case SET removed_at=? WHERE id=? AND removed_at IS ?');
+    const timestamp = new Date().toISOString();
+    this.catalog.transaction(() => {
+      for (const record of records) update.run(restore ? null : record.removed_at ?? timestamp, record.id, record.removed_at);
+    }).immediate();
+    if (!restore && ids.includes(this.currentCaseId)) {
+      this.caseDb?.close();
+      this.caseDb = null;
+      this.currentCaseId = null;
+      this.importRecovery = null;
+    }
+    return { cases: await this.listCases(), currentCaseId: this.currentCaseId };
+  }
+
+  async emptyRecycleBin(selection) {
+    const current = await this.listRecycleBin();
+    const caseIds = current.cases.map(item => item.id);
+    const materialIds = current.materials.map(item => item.caseId + '/' + item.id);
+    const same = (actual, expected) => Array.isArray(expected) &&
+      JSON.stringify([...actual].sort()) === JSON.stringify([...expected].sort());
+    if (!same(caseIds, selection?.caseIds) || !same(materialIds, selection?.materialIds)) {
+      throw failure('FS_TRASH_STALE', '回收站内容已变化，请刷新后重新确认。');
+    }
+    const result = { removed: 0, failures: [...current.unavailable] };
+    const group = Map.groupBy(current.materials, row => row.caseId);
+    for (const [id, items] of group) {
+      const record = this._caseRecord(id);
+      let db;
+      try {
+        db = this.currentCaseId === id ? this.caseDb : await this._openCaseDatabase(record);
+        purgeRemovedMaterials(db, record, this._casePath(id), items.map(item => item.id));
+        result.removed += items.length;
+      } catch (error) {
+        result.failures.push(record.case_name + (error.code === 'FS_TRASH_REFERENCED' ? '（余额历史仍在引用）' : ''));
+      } finally {
+        if (db && db !== this.caseDb) db.close();
+      }
+    }
+    for (const id of caseIds) {
+      const record = this._caseRecord(id, { includeRemoved: true });
+      try {
+        const directory = this._casePath(id);
+        const parent = path.dirname(directory);
+        const staging = path.join(parent, '.fundsift-purge-' + id);
+        if (fs.realpathSync(parent) !== parent) throw failure('FS_UNSAFE_PATH', '案件目录路径已变化。');
+        if (hasPath(directory)) {
+          const db = await this._openCaseDatabase(record);
+          db.close();
+          fs.renameSync(directory, staging);
+        }
+        if (hasPath(staging)) {
+          if (!isDirectory(staging) || fs.realpathSync(staging) !== staging || path.dirname(staging) !== parent) {
+            throw failure('FS_UNSAFE_PATH', '待清理的案件目录路径已变化。');
+          }
+          fs.rmSync(staging, { recursive: true, force: true });
+        }
+        this.catalog.prepare('DELETE FROM workspace_case WHERE id=? AND removed_at IS NOT NULL').run(id);
+        result.removed++;
+      } catch (_) { result.failures.push(record.case_name); }
+    }
+    return result;
+  }
+
+  async removeCase(id) {
+    const record = this._caseRecord(id, { includeRemoved: true });
+    if (record.removed_at === null) {
+      this.catalog.prepare('UPDATE workspace_case SET removed_at=? WHERE id=? AND removed_at IS NULL').run(new Date().toISOString(), id);
+    }
+    if (this.currentCaseId === id) {
+      this.caseDb?.close();
+      this.caseDb = null;
+      this.currentCaseId = null;
+      this.importRecovery = null;
+    }
+    return { cases: await this.listCases(), currentCaseId: this.currentCaseId, removedCases: this.listRemovedCases() };
+  }
+
+  async restoreCase(id) {
+    const record = this._caseRecord(id, { includeRemoved: true });
+    if (record.removed_at !== null) {
+      const db = await this._openCaseDatabase(record);
+      db.close();
+      this.catalog.prepare('UPDATE workspace_case SET removed_at=NULL WHERE id=? AND removed_at IS NOT NULL').run(id);
+    }
+    return { cases: await this.listCases(), currentCaseId: this.currentCaseId, removedCases: this.listRemovedCases() };
   }
 
   async createCase(input) {
@@ -470,6 +607,7 @@ class WorkspaceStore {
         installCaseV2(db, record);
         installCaseV3(db, record);
         installCaseV4(db);
+        installCaseV5(db);
         db.pragma(`user_version = ${CASE_SCHEMA_VERSION}`);
       })();
       db.pragma('foreign_keys=ON');

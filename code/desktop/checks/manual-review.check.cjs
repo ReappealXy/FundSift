@@ -109,6 +109,9 @@ test('确认只解除选中的原因，更正追加历史，规则底稿保留�
   const selected = before.reasons.find(reason => reason.reason_code === signReason);
   const untouched = before.reasons.find(reason => reason.reason_code === 'time_missing');
   assert.equal(before.resolveReasonId, selected.id);
+  const readLedgerRow = () => fix.data.queryFlows(fix.caseId).rows.find(row => row.id === before.flowId);
+  assert.deepEqual(readLedgerRow().review, { canNote: true, canResolve: true, hasHistory: false });
+  assert.equal(readLedgerRow().ledger.note1, '消费退货');
   const resolution = request(before, 'resolve', { reasonId: selected.id, amountText: '1.00', direction: '进' });
   assert.throws(() => fix.save({ ...resolution, reasonId: untouched.id }), { code: 'FS_REVIEW_SCOPE' });
   for (const amountText of ['0.00', '-1.00', '1.001', '92233720368547758.09']) {
@@ -121,6 +124,7 @@ test('确认只解除选中的原因，更正追加历史，规则底稿保留�
   assert.equal(after.direction, '进');
   assert.equal(after.resolveReasonId, null);
   assert.equal(after.correctReasonId, selected.id);
+  assert.deepEqual(readLedgerRow().review, { canNote: true, canResolve: false, hasHistory: true });
   assert.deepEqual(after.reasons.find(reason => reason.id === untouched.id), untouched);
   const resolved = after.reasons.find(reason => reason.id === selected.id);
   assert.equal(resolved.detail, selected.detail);
@@ -225,6 +229,8 @@ test('支付宝按批准规则重导后，按原文坐标与哈希关联旧说�
   assert.deepEqual(current.reasons.map(reason => reason.reason_code), ['direction_unknown']);
   assert.equal(current.history.length, 1);
   assert.equal(current.history[0].is_current_batch, false);
+  const projected = fix.data.queryFlows(fix.caseId).rows.find(row => row.id === current.flowId);
+  assert.deepEqual(projected.review, { canNote: true, canResolve: false, hasHistory: true });
   const material = listMaterialReviewHistory(fix.db, fix.record, current.sourceFileId);
   assert.equal(material.oldReviewCount, 1);
   assert.equal(material.history[0].id, note.event.id);

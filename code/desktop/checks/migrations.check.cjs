@@ -8,6 +8,9 @@ const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const Database = require('better-sqlite3');
 const { WorkspaceStore } = require('../storage.cjs');
+const { installCaseV2 } = require('../hardening.cjs');
+const { configureFoundation, installCaseV3 } = require('../foundation.cjs');
+const { installCaseV4 } = require('../review-schema.cjs');
 const { schemaSignature } = require('../migrations.cjs');
 const schemaPath = path.resolve(__dirname, '../../ddl_extract_check.sql');
 const oldSchema = fs.readFileSync(schemaPath, 'utf8');
@@ -53,7 +56,8 @@ function addV1(root, number = 'V1', withData = false) {
     `);
   }
   const catalog = new Database(path.join(root, 'workspace.sqlite'));
-  catalog.prepare('INSERT INTO workspace_case VALUES(@id,@case_no,@case_name,@relative_path,@created_at,@updated_at,@last_opened_at)').run(record);
+  catalog.prepare(`INSERT INTO workspace_case (id,case_no,case_name,relative_path,created_at,updated_at,last_opened_at)
+    VALUES(@id,@case_no,@case_name,@relative_path,@created_at,@updated_at,@last_opened_at)`).run(record);
   catalog.close();
   return { record, db, file: path.join(directory, 'case.sqlite') };
 }
@@ -66,7 +70,7 @@ function manifests(folder) {
   });
 }
 
-test('v1含WAL数据升级，独立备份完整，身份原文和时间不变；新建/升级v4结构一致', async t => {
+test('v1含WAL数据升级，独立备份完整，身份原文和时间不变；新建/升级v5结构一致', async t => {
   const { root, store } = setup(t);
   const old = addV1(root, 'Ab-001', true);
   t.after(() => { if (old.db.open) old.db.close(); });
@@ -96,6 +100,38 @@ test('v1含WAL数据升级，独立备份完整，身份原文和时间不变；
   assert.equal(manifests(root).length, 1);
 });
 
+test('上版工作区 v2 和案件 v4 升级后，旧材料保持可见并可移入回收站', async t => {
+  const { root, store } = setup(t);
+  const old = addV1(root, 'V4', true);
+  const catalog = new Database(path.join(root, 'workspace.sqlite'));
+  catalog.exec('CREATE UNIQUE INDEX idx_workspace_case_number_nocase ON workspace_case(case_no COLLATE NOCASE); PRAGMA user_version=2');
+  catalog.close();
+  configureFoundation(old.db);
+  old.db.pragma('foreign_keys=OFF');
+  old.db.transaction(() => {
+    installCaseV2(old.db, old.record);
+    installCaseV3(old.db, old.record);
+    installCaseV4(old.db);
+  })();
+  old.db.pragma('user_version=4');
+  old.db.close();
+  const state = await store.openWorkspace(root);
+  assert.equal(state.cases[0].available, true);
+  assert.deepEqual(state.cases[0].stats, { files: 1, flows: 1, pending: 0 });
+  assert.equal(store.catalog.pragma('user_version', { simple: true }), 3);
+  await store.openCase(old.record.id);
+  assert.equal(store.caseDb.pragma('user_version', { simple: true }), 5);
+  assert.deepEqual(store.caseDb.prepare('SELECT removed_at FROM source_file').get(), { removed_at: null });
+  const catalogBackup = manifests(root);
+  const caseBackup = manifests(path.dirname(old.file));
+  assert.deepEqual(catalogBackup.map(item => [item.data.version, item.data.targetVersion]), [[2, 3]]);
+  assert.deepEqual(caseBackup.map(item => [item.data.version, item.data.targetVersion]), [[4, 5]]);
+  const { DesktopData } = require('../desktop-data.cjs');
+  const data = new DesktopData(store);
+  assert.deepEqual(data.removeMaterial(old.record.id, '1').case.stats, { files: 0, flows: 0, pending: 0 });
+  assert.deepEqual(data.restoreMaterial(old.record.id, '1').case.stats, { files: 1, flows: 1, pending: 0 });
+});
+
 test('工作区旧编号NOCASE冲突阻止升级且不自动改名', async t => {
   const { root, store } = setup(t);
   const first = addV1(root, 'A1'), second = addV1(root, 'a1'); first.db.close(); second.db.close();
@@ -121,7 +157,7 @@ test('单案脏金额阻止升级，其他案件正常且保留混合版本待�
 });
 
 for (const phase of ['beforeBackup', 'afterInstall', 'beforeCommit']) {
-  test(`升级${phase}故障回滚并可重试；不留下半v2结构`, async t => {
+  test(`升级${phase}故障回滚并可重试；不留下半v3结构`, async t => {
     let inject = true;
     const { root, store } = setup(t, { [phase]: () => { if (inject) throw new Error('injected failure'); } });
     const old = addV1(root, 'FAIL', true); old.db.close();
@@ -155,7 +191,7 @@ test('单案升级安装后失败只回滚该案，兼容案件继续可用，�
   assert.equal(manifests(path.dirname(old.file)).length, 2);
 });
 
-test('提交后异常重启识别完整v4，不重复升级或自动恢复旧备份', async t => {
+test('提交后异常重启识别完整v5，不重复升级或自动恢复旧备份', async t => {
   let inject = true;
   const { root, store } = setup(t, { afterCommit: ({ filePath }) => {
     if (inject && filePath.endsWith('case.sqlite')) throw new Error('exit after commit');
@@ -164,7 +200,7 @@ test('提交后异常重启识别完整v4，不重复升级或自动恢复旧备
   const first = await store.openWorkspace(root);
   assert.equal(first.cases[0].available, false);
   const db = new Database(old.file);
-  assert.equal(db.pragma('user_version', { simple: true }), 4);
+  assert.equal(db.pragma('user_version', { simple: true }), 5);
   assert.equal(db.prepare('SELECT amount FROM fund_flow').get().amount, 12345); db.close();
   inject = false; store.close();
   assert.equal((await store.openWorkspace(root)).cases[0].available, true);

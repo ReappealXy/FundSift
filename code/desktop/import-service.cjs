@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { ArchiveStore, hashFile } = require('./archive-store.cjs');
-const { runCaseTransaction, runCaseIntegrityTransaction } = require('./hardening.cjs');
+const { activeMaterialPredicate, runCaseTransaction, runCaseIntegrityTransaction } = require('./hardening.cjs');
 const { registerRuleConfig, validateRuleConfig, canonicalJSON, RULE_CONFIG_SCHEMA } = require('./foundation.cjs');
 const { assertInt64, toWire } = require('./money.cjs');
 
@@ -33,7 +33,7 @@ function id(db,table) {
   return Number(next);
 }
 function assertCase(db,record) {
-  if(!record || typeof record.id!=='string' || ![3,4].includes(db.pragma('user_version',{simple:true})) ||
+  if(!record || typeof record.id!=='string' || ![3,4,5].includes(db.pragma('user_version',{simple:true})) ||
     db.prepare('SELECT case_uuid FROM desktop_case_identity WHERE id=1').get()?.case_uuid!==record.id) {
     fail('FS_CASE_IDENTITY','导入案件与当前数据库不一致，已停止操作。');
   }
@@ -216,6 +216,7 @@ function failedRetrySource(db,sourceId) {
     AND b.case_id=s.case_id AND b.status='failed'
     LEFT JOIN archive_entry a ON a.id=b.archive_entry_id
     WHERE s.id=? AND s.case_id=1 AND s.status='failed' AND s.current_batch_id IS NULL
+    AND ${activeMaterialPredicate(db)}
     AND NOT EXISTS(SELECT 1 FROM import_batch active_batch WHERE active_batch.source_file_id=s.id
       AND active_batch.status IN ('pending','parsing','importing'))`).safeIntegers().get(sourceId);
   if (!source) fail('FS_IMPORT_RETRY_STATE','仅能重试没有有效结果且已终止的失败材料。');
@@ -243,6 +244,7 @@ function currentReimportSource(db, { sourceId, previousBatchId }, ownBatchId = 0
     JOIN format_rule r ON r.id=s.format_rule_id AND r.format_key=? AND r.rule_version=1
     LEFT JOIN archive_entry a ON a.id=b.archive_entry_id
     WHERE s.id=? AND s.case_id=1 AND s.status='imported' AND s.current_batch_id=?
+    AND ${activeMaterialPredicate(db)}
     AND NOT EXISTS(SELECT 1 FROM import_batch other WHERE other.source_file_id=s.id AND other.id<>?
       AND other.status IN ('pending','parsing','importing'))`).safeIntegers().get(FORMAT_KEY,sourceId,previousBatchId,ownBatchId);
   if (!source) fail('FS_IMPORT_REIMPORT_STATE','支付宝材料的当前批次已变更或不适用规则更新，请刷新材料列表。');
@@ -287,7 +289,7 @@ async function reimportApprovedSource({db,record,caseDirectory,sourceFileId,expe
     {sourceId:asId(sourceFileId),previousBatchId:asId(expectedBatchId)});
 }
 
-async function importSourceFile({db,record,caseDirectory,filePath,rule,policy,signal,onProgress,reimport=false,retrySourceId=null}={},approvedReimport=null) {
+async function importSourceFile({db,record,caseDirectory,filePath,rule,policy,signal,onProgress,reimport=false,retrySourceId=null,expectedSourceIdentity=null}={},approvedReimport=null) {
   assertCase(db,record);
   assertCaseDirectory(db,caseDirectory);
   if(active.has(db))fail('FS_IMPORT_BUSY','当前案件已有导入任务，请等待完成。');
@@ -335,8 +337,13 @@ async function importSourceFile({db,record,caseDirectory,filePath,rule,policy,si
         expectedSha256:found.file_sha256,sizeBytes:found.size_bytes};
     } else {
       const archive=new ArchiveStore(caseDirectory);
-      staged=await archive.stage(filePath,{signal,onProgress:event=>progress(onProgress,event)});
-      found=db.prepare('SELECT id FROM source_file WHERE case_id=1 AND file_sha256=?').get(staged.expectedSha256);
+      staged=await archive.stage(filePath,{expectedSourceIdentity,signal,onProgress:event=>progress(onProgress,event)});
+      found=db.prepare(`SELECT s.id, (${activeMaterialPredicate(db)}) AS active
+        FROM source_file s WHERE s.case_id=1 AND s.file_sha256=?`).get(staged.expectedSha256);
+      if(found&&!found.active) {
+        sourceId=found.id;
+        fail('FS_IMPORT_REMOVED','此原件已在材料回收站，请恢复原材料后继续。');
+      }
       if(found&&!reimport){sourceId=found.id;fail('FS_IMPORT_DUPLICATE','本案件已登记相同原件，未再次导入。失败材料可在材料管理重试。');}
       storedRule=registerRule(db,record,binding,config);
       archiveId=registerArchive(db,record,staged);
@@ -431,7 +438,8 @@ async function importSourceFile({db,record,caseDirectory,filePath,rule,policy,si
       ...(isApprovedReimport?{previousBatchId:approvedReimport.previousBatchId,ruleVersion:storedRule.rule_version}:{}),
       importedRows:written,skippedRows:0,pendingRows:pending,unquantifiableRows:unquantifiable,diagnosticRows,errorRows:0,cancelledRows:0};
   } catch(error) {
-    const code=signal?.aborted||error.name==='AbortError'?'FS_USER_CANCELLED':error.code?.startsWith('FS_')?error.code:'FS_IMPORT_FAILED';
+    const code=signal?.aborted||error.name==='AbortError'?'FS_USER_CANCELLED':
+      error.code?.startsWith('FS_')||error.code?.startsWith('SQLITE_')?error.code:error.code==='ENOSPC'?'FS_ARCHIVE_SPACE':'FS_IMPORT_FAILED';
     if(batchCreated) {
       const existing=db.prepare('SELECT status FROM import_batch WHERE id=?').get(batchId);
       if(existing&&!['done','failed','partial'].includes(existing.status)) {
@@ -444,8 +452,9 @@ async function importSourceFile({db,record,caseDirectory,filePath,rule,policy,si
       }
     }
     const wrapped=Object.assign(new Error(code==='FS_USER_CANCELLED'?'已取消导入，原有效批次保持不变。':
-      ['FS_IMPORT_DUPLICATE','FS_IMPORT_RETRY_STATE','FS_IMPORT_RETRY_RULE','FS_IMPORT_REIMPORT_STATE',
-        'FS_IMPORT_REIMPORT_RULE','FS_IMPORT_REIMPORT_RECORDS','FS_ARCHIVE_HASH'].includes(code)?error.message:
+      ['FS_IMPORT_DUPLICATE','FS_IMPORT_REMOVED','FS_IMPORT_RETRY_STATE','FS_IMPORT_RETRY_RULE','FS_IMPORT_REIMPORT_STATE',
+      'FS_IMPORT_REIMPORT_RULE','FS_IMPORT_REIMPORT_RECORDS','FS_ARCHIVE_HASH','FS_IMPORT_BATCH_CHANGED'].includes(code)?error.message:
+      code==='FS_ARCHIVE_SPACE'?'数据存放位置的磁盘空间不足。':
         '导入未发布，请根据错误码核对规则或材料；原有效批次保持不变。',{cause:error}),{code});
     wrapped.receipt={state:code==='FS_USER_CANCELLED'?'cancelled':'failed',sourceFileId:sourceId,batchId:batchCreated?batchId:null,
       importedRows:written,pendingRows:pending,unquantifiableRows:unquantifiable,diagnosticRows,errorCode:code};
@@ -462,7 +471,8 @@ async function readFlowSource({db,record,caseDirectory,caseDir,flowId,signal}={}
   const row=db.prepare(`SELECT f.source_loc,f.raw_record,s.file_name,s.file_sha256,a.size_bytes,a.final_relative_path,a.expected_sha256,
     a.copied_sha256,a.status AS archive_status FROM fund_flow f JOIN source_file s ON s.id=f.source_file_id
     JOIN import_batch b ON b.id=f.batch_id AND b.source_file_id=s.id
-    JOIN archive_entry a ON a.id=b.archive_entry_id WHERE f.id=? AND f.case_id=1 AND s.case_id=1 AND b.case_id=1`).safeIntegers().get(flow);
+    JOIN archive_entry a ON a.id=b.archive_entry_id
+    WHERE f.id=? AND f.case_id=1 AND s.case_id=1 AND b.case_id=1 AND ${activeMaterialPredicate(db)}`).safeIntegers().get(flow);
   if(!row)fail('FS_IMPORT_SOURCE','流水或完整归档引用已失联。');
   if(row.archive_status!=='verified'||row.expected_sha256!==row.file_sha256||row.copied_sha256!==row.file_sha256)fail('FS_ARCHIVE_HASH','回源归档身份不一致。');
   const file=archivePath(caseDirectory??caseDir,row.final_relative_path,row.file_sha256);

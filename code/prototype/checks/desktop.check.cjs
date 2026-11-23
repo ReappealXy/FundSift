@@ -223,6 +223,11 @@ async function main(){
   verify(t.$('.desktop-materials tbody').textContent.includes('<img')&&!t.$('.desktop-materials img'),'Untrusted material filename is escaped');
   t.action('material-flows');await settle();
   verify(t.$('.desktop-ledger').textContent.includes('+92,233,720,368,547,758.07'),'Signed int64 maximum renders without Number loss');
+  verify(t.$$('.desktop-ledger thead th').slice(0,12).map(el=>el.textContent.trim()).join('|')===
+    '渠道|本方|本方账号 / 标识|对手方|对手方账号 / 标识|交易时间|收支|金额（元）|交易类型|备注 1|备注 2|交易单号',
+    'Desktop ledger uses independent evidence columns');
+  verify(t.$('td.ledger-account').textContent==='00001(合成身份)'&&t.$('td.ledger-counterpartyAccount').textContent==='—',
+    'Ledger preserves composite source identifier and displays a dash for the absent counterparty identifier');
   verify(queryOptions.at(-1).filters.sourceFileId===1,'Material drilldown scopes source server side');
   t.action('desktop-source');await settle();
   verify(sourceCalls===1&&t.$('.raw-evidence').textContent.includes('<script>')&&!t.$('.raw-evidence script'),'Verified source values render as text');
@@ -273,7 +278,11 @@ async function main(){
   let version='11',resolved=false,corrected=false;
   const histories={'71':[oldEvent],'72':[]};
   const activeMaterial=()=>({...material,fileName:'合成建行.xlsx',currentBatchId:'3',reviewedRows:'0',previousReviewedRows:'1'});
-  const reviewRows=()=>[{...refund,amount:corrected?'135':resolved?'134':null,direction:resolved?'进':null,pendingReasons:resolved?[other]:[sign,other]},{...transfer,pendingReasons:[direction]}];
+  const reviewRows=()=>[
+    {...refund,amount:corrected?'135':resolved?'134':null,direction:resolved?'进':null,pendingReasons:resolved?[other]:[sign,other],
+      review:{canNote:true,canResolve:!resolved,hasHistory:true}},
+    {...transfer,pendingReasons:[direction],review:{canNote:true,canResolve:false,hasHistory:histories['72'].length>0}}
+  ];
   fixture.bridge.listMaterials=async id=>success({caseId:id,dataVersion:version,materials:[activeMaterial()]});
   fixture.bridge.queryFlows=async id=>success({caseId:id,dataVersion:version,total:'2',rows:reviewRows(),nextCursor:null});
   fixture.bridge.getReview=async (caseId,flowId)=>{
@@ -310,7 +319,10 @@ async function main(){
   verify(t.$('.modal').textContent.includes('当前批次有相符记录')&&t.$('.modal').textContent.includes('本批次未继承'),'Material history identifies old evidence matching the current batch');
   t.action('close-modal');t.nav('review');await settle();
   verify(t.$('.desktop-ledger').textContent.includes('业务性质已定（内部划转），方向待定'),'Internal transfer displays the known classification and remaining uncertainty');
-  t.action('desktop-review-open','[data-id="72"]');await settle();
+  verify(t.$('[data-action="desktop-review-open"][data-id="72"][data-mode="note"]').textContent.includes('记录核查说明')&&
+    t.$('[data-action="desktop-review-open"][data-id="71"][data-mode="resolve"]').textContent.includes('确认金额和方向'),
+    'Ledger names the available action before a record is opened');
+  t.action('desktop-review-open','[data-id="72"][data-mode="note"]');await settle();
   verify(t.$('.modal').textContent.includes('本笔只能记说明')&&!t.$('#manual-review-amount'),'Ineligible reasons receive a note form without value controls');
   t.action('desktop-review-save');
   verify(t.$('#manual-review-error').textContent.includes('请填写')&&pendingSaves.length===0,'Empty form never submits a review');
@@ -321,9 +333,13 @@ async function main(){
   t.action('desktop-review-save');commitReview(pendingSaves[1]);await settle();
   verify(pendingSaves[0].payload.requestId===pendingSaves[1].payload.requestId,'Retrying an identical payload reuses request identity');
   verify(t.$('#manual-review-result').textContent==='说明已保存。'&&t.$('.manual-review-reasons').textContent.includes('仍待核')&&t.$('.manual-review-evidence').textContent.includes('<img')&&!t.$('.modal img'),'Note shows exact escaped evidence with remaining status');
-  t.action('close-modal');t.action('desktop-review-open','[data-id="71"]');await settle();
+  t.action('close-modal');t.action('desktop-review-open','[data-id="71"][data-mode="history"]');await settle();
+  verify(t.$('#modal-title').textContent==='查看复核历史'&&!t.$('#manual-review-form')&&t.$('.modal').textContent.includes('旧批次复核历史'),
+    'History action opens the evidence as read-only until the user chooses a review action');
+  t.action('close-modal');t.action('desktop-review-open','[data-id="71"][data-mode="resolve"]');await settle();
   verify(t.$('.modal').textContent.includes('消费退货')&&t.$('.modal').textContent.includes('-1.34 元')&&t.$('.modal').textContent.includes('旧批次复核历史'),'Review provides refund source fields and prior-batch history');
-  t.action('desktop-review-resolve');
+  verify(t.$('#manual-review-amount')&&t.$('#modal-title').textContent==='确认金额和方向',
+    'Refund action opens directly in confirmation mode');
   t.input('#manual-review-operator','核查二');t.input('#manual-review-evidence','余额由 0.73 变为 2.07。');
   t.input('#manual-review-amount','-1.34');t.input('#manual-review-direction','进');
   t.action('desktop-review-save');

@@ -5,21 +5,23 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { finished } = require('node:stream/promises');
 const Excel = require('exceljs');
-const { EFFECTIVE_FLOW_FROM, withCaseReadSnapshot } = require('./hardening.cjs');
+const { activeMaterialPredicate, effectiveFlowFrom, withCaseReadSnapshot } = require('./hardening.cjs');
 const { parseMinor, assertInt64 } = require('./money.cjs');
+const { repairText } = require('./text-repair.cjs');
+const { sourceFields } = require('./ledger-fields.cjs');
 
 const MAX_DATA_ROWS = 1048575;
 const MAX_CELL_LENGTH = 32767;
 const EXACT_EXCEL_MINOR_LIMIT = 999999999999999n;
-const WORKPAPER_FORMAT_VERSION = 3;
+const WORKPAPER_FORMAT_VERSION = 4;
 const ALIPAY = 'alipay-account-17col-v1';
 const WECHAT = 'wechat-trades-27col-v1';
 const CCB = 'ccb-account-32col-v1';
 const FORMAT_WIDTHS = { [ALIPAY]: 17, [WECHAT]: 27, [CCB]: 32 };
 const ALIPAY_CLOSED_STATUS = '交易中途关闭（未完成）';
 const TEXT_ESCAPE_PREFIX = '\\u16:';
-const CONTROL_OR_EXCEL_ESCAPE = /[\x00-\x08\x0B-\x1F\x7F-\x9F\u202A-\u202E\u2066-\u2069\uD800-\uDFFF\uFFFE\uFFFF]|_x[0-9A-F]{4}_/iu;
-const XML_UNSAFE_LITERAL = /[\\\x00-\x08\x0B-\x1F\x7F-\x9F\u202A-\u202E\u2066-\u2069\uD800-\uDFFF\uFFFE\uFFFF]|_(?=x[0-9A-F]{4}_)/giu;
+const CONTROL_OR_EXCEL_ESCAPE = /[\x00-\x08\x0B-\x1F\x7F-\x9F\u061C\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF\uD800-\uDFFF\uFFFE\uFFFF]|_x[0-9A-F]{4}_/iu;
+const XML_UNSAFE_LITERAL = /[\\\x00-\x08\x0B-\x1F\x7F-\x9F\u061C\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF\uD800-\uDFFF\uFFFE\uFFFF]|_(?=x[0-9A-F]{4}_)/giu;
 const FILLS = ['25435D', '3C536D', '314E64'];
 const font = { name: 'Microsoft YaHei', size: 10, color: { argb: 'FF172B3F' } };
 const text = '@';
@@ -101,7 +103,7 @@ function readDataVersion(db, record) {
 }
 
 function rowCount(db) {
-  return db.prepare('SELECT count(*) AS n ' + EFFECTIVE_FLOW_FROM).get().n;
+  return db.prepare(`SELECT count(*) AS n ${effectiveFlowFrom(db)}`).get().n;
 }
 
 function getWorkpaperContext({ db, record }) {
@@ -272,8 +274,7 @@ function moneyExplanation(row, money) {
   return notes.join('；');
 }
 
-function rowValues(row, record, reasons) {
-  const raw = rawEnvelope(row);
+function rowValues(row, record, reasons, raw = rawEnvelope(row)) {
   const [account, peer, ownCard, peerCard, receiver, rawStatus] = rawEvidence(row, raw);
   const [ownName, peerName] = accountNames(row, raw);
   const [worksheet, rowNumber] = position(row);
@@ -322,7 +323,7 @@ function readWorkpaper(db, record, expectedDataVersion) {
     const materials = db.prepare(`SELECT s.file_name,s.file_sha256,s.status
       FROM source_file s LEFT JOIN import_batch b ON b.id=s.current_batch_id AND b.source_file_id=s.id
         AND b.case_id=s.case_id AND b.status='done'
-      WHERE s.case_id=1 AND b.id IS NULL ORDER BY s.id`).all();
+      WHERE s.case_id=1 AND b.id IS NULL AND ${activeMaterialPredicate(db)} ORDER BY s.id`).all();
     const readReasons = db.prepare(`SELECT p.reason_code,p.detail FROM pending_reason p
       WHERE p.fund_flow_id=? AND (p.resolved_at IS NULL OR EXISTS (
         SELECT 1 FROM review_event e WHERE e.fund_flow_id=p.fund_flow_id AND e.reason_id=p.id AND e.action='resolve'
@@ -333,7 +334,7 @@ function readWorkpaper(db, record, expectedDataVersion) {
         f.peer_acct,f.acct_name,f.peer_name,f.summary,f.txn_type,f.txn_time,f.txn_time_text,
         f.raw_amount_text,f.raw_income_text,f.raw_expense_text,f.raw_direction,f.raw_balance_text,
         f.raw_currency_text,f.raw_record,f.amount,f.direction,f.currency,f.currency_evidence,f.status,
-        s.file_name,s.file_sha256,b.parser_version ${EFFECTIVE_FLOW_FROM}
+        s.file_name,s.file_sha256,b.parser_version ${effectiveFlowFrom(db)}
       ) flow LEFT JOIN format_rule r ON r.id=flow.format_rule_id AND r.rule_version=flow.rule_version
       LEFT JOIN review_event e ON e.id=(SELECT first.id FROM review_event first
         WHERE first.fund_flow_id=flow.id AND first.action='resolve' ORDER BY first.id LIMIT 1)
@@ -341,6 +342,7 @@ function readWorkpaper(db, record, expectedDataVersion) {
     const counts = newCounts(), platforms = new Map(), reasonSummary = new Map(), rows = [];
     const recordCounts = new Map(Object.values(RECORD).map(label => [label, 0]));
     let hasEscapedText = false;
+    const repairs = [];
     for (const row of readRows.iterate()) {
       if (row.review_baseline_id !== null) {
         row.amount = row.before_amount;
@@ -358,14 +360,27 @@ function readWorkpaper(db, record, expectedDataVersion) {
       if (!platforms.has(name)) platforms.set(name, { platform: name, ...newCounts() });
       countRow(platforms.get(name), row);
       countRow(counts, row);
-      const values = rowValues(row, record, reasons);
+      const raw = rawEnvelope(row);
+      const values = rowValues(row, record, reasons, raw);
       const label = values[recordStatusColumn - 1];
       recordCounts.set(label, recordCounts.get(label) + 1);
       hasEscapedText ||= values.some(value => typeof value === 'string' && value.startsWith(TEXT_ESCAPE_PREFIX));
+      for (const field of sourceFields(raw)) {
+        const repair = repairText(field.value);
+        if (!repair) continue;
+        const original = excelText(field.value);
+        hasEscapedText ||= original.startsWith(TEXT_ESCAPE_PREFIX);
+        repairs.push({
+          values: [excelText(row.file_name), excelText(row.file_sha256), excelText(row.source_loc),
+            field.column, excelText(field.header), original, excelText(repair.value),
+            repair.needsReview ? '待核原文' : repair.value === '' ? '已清理为空' : '已修复'],
+          changed: !repair.needsReview
+        });
+      }
       rows.push(values);
     }
     if (rows.length !== totalRows) fail('FS_EXPORT_READ', '底稿行数与有效流水不一致，未生成文件。');
-    return { rows, materials, counts, recordCounts, dataVersion, connectionVersion, hasEscapedText,
+    return { rows, repairs, materials, counts, recordCounts, dataVersion, connectionVersion, hasEscapedText,
       platforms: [...platforms.values()].sort((a, b) => a.platform.localeCompare(b.platform, 'zh-CN')),
       reasons: [...reasonSummary.values()].sort((a, b) => a.code.localeCompare(b.code)) };
   });
@@ -402,6 +417,7 @@ function summarySheet(workbook, record, snapshot, exportedAt) {
   add(['用途', '本表展示导入规则的初始结果和待核原因。人工复核请在软件中查看。在 Excel 里改不算复核，也不会写回案件。'], 45);
   add(['案件', record.case_no + ' · ' + record.case_name], 26);
   add(['底稿格式版本', WORKPAPER_FORMAT_VERSION]);
+  add(['原值与修复值', '“导入文本核对”列出需要处理的原始字段，原始值右侧为修复后。无法确定的内容标为待核原文，按文件哈希和来源坐标回查。'], 48);
   add(['数据版本', snapshot.dataVersion]);
   add(['导出时间（UTC）', exportedAt]);
   add(['有效流水口径', '仅收录每份材料当前已完成批次内的记录。保留各来源记录与待核原因。'], 33);
@@ -478,11 +494,31 @@ async function writeWorkbook(stream, record, snapshot, time, onProgress) {
   }
   onProgress({ phase: 'writing-export', totalRows, writtenRows: totalRows });
   sheet.commit();
+  const repairHeaders = ['原件文件名','原件 SHA256','source_loc 原文','原件列号','字段','原始值','修复后','处理状态'];
+  for (let offset = 0; offset < Math.max(1, snapshot.repairs.length); offset += MAX_DATA_ROWS) {
+    const index = offset / MAX_DATA_ROWS + 1;
+    const repairs = workbook.addWorksheet(index === 1 ? '导入文本核对' : '导入文本核对 ' + index, {
+      views: [{ state: 'frozen', ySplit: 1 }]
+    });
+    repairs.columns = [32, 68, 25, 13, 24, 46, 46, 16].map(width => ({ width, style: { font, numFmt: text } }));
+    styleHeader(repairs.addRow(repairHeaders));
+    const end = Math.min(offset + MAX_DATA_ROWS, snapshot.repairs.length);
+    for (let position = offset; position < end; position++) {
+      const { values, changed } = snapshot.repairs[position];
+      const repairRow = repairs.addRow(values);
+      if (changed && snapshot.highlightRepairs) repairRow.getCell(7).fill = {
+        type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CA' }
+      };
+      repairRow.commit();
+      if ((position + 1) % 512 === 0) await new Promise(resolve => setImmediate(resolve));
+    }
+    repairs.commit();
+  }
   summarySheet(workbook, record, snapshot, time.toISOString());
   await workbook.commit();
 }
 
-async function exportWorkpaper({ db, record, filePath, expectedDataVersion, onProgress = () => {} }) {
+async function exportWorkpaper({ db, record, filePath, expectedDataVersion, highlightRepairs = true, onProgress = () => {} }) {
   if (typeof filePath !== 'string' || !path.isAbsolute(filePath) || path.extname(filePath).toLowerCase() !== '.xlsx' ||
       typeof expectedDataVersion !== 'string' || !/^(?:0|[1-9]\d{0,18})$/.test(expectedDataVersion) || db.inTransaction) {
     fail('FS_EXPORT_INPUT', '请重新选择 Excel 底稿的保存位置。');
@@ -490,6 +526,7 @@ async function exportWorkpaper({ db, record, filePath, expectedDataVersion, onPr
   const time = new Date();
   onProgress({ phase: 'reading-export' });
   const snapshot = readWorkpaper(db, record, expectedDataVersion);
+  snapshot.highlightRepairs = highlightRepairs === true;
   let temporary, stream, done, published = false;
   try {
     if (fs.existsSync(filePath)) fail('FS_EXPORT_EXISTS', '同名底稿已存在，请重新生成文件名。');

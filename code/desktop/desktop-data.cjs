@@ -1,10 +1,12 @@
 'use strict';
 
+const { repairText } = require('./text-repair.cjs');
+
 // Desktop-only adapter. Renderer input never supplies paths, rules or approval
 // identities; the main process selects one file and confirms its currency.
 const { importSourceFile, readFlowSource } = require('./import-service.cjs');
 const { queryFlowPage } = require('./flow-query.cjs');
-const { withCaseReadSnapshot } = require('./hardening.cjs');
+const { effectiveFlowFrom, runCaseTransaction, withCaseReadSnapshot } = require('./hardening.cjs');
 const { assertInt64 } = require('./money.cjs');
 const { queryRelationCandidates } = require('./relation-candidates.cjs');
 const { getReviewContext, saveReview, listMaterialReviewHistory } = require('./manual-review.cjs');
@@ -62,11 +64,18 @@ class DesktopData {
     return { db: store.caseDb, record, caseDirectory: store._casePath(caseId) };
   }
   listMaterials(caseId) {
+    return this._listMaterials(caseId, false);
+  }
+  listRemovedMaterials(caseId) {
+    return this._listMaterials(caseId, true);
+  }
+  _listMaterials(caseId, removed) {
     const {db} = this.context(caseId);
     return withCaseReadSnapshot(db, () => {
       const state = db.prepare('SELECT case_uuid,data_version FROM case_data_state WHERE id=1').safeIntegers().get();
       if (!state || state.case_uuid !== caseId) fail('FS_CASE_IDENTITY', '案件身份与数据库不符。');
       const materials = db.prepare(`SELECT s.id,s.file_name AS fileName,s.file_size AS sizeBytes,s.file_sha256 AS sha256,
+        s.removed_at AS removedAt,
         s.status,s.perspective,s.encoding_observed AS encoding,s.format_observed AS formatKey,
         s.data_rows AS observedRows,s.coverage_complete AS coverageComplete,s.current_batch_id AS currentBatchId,
         b.status AS batchStatus,b.imported_rows AS importedRows,b.parser_version AS parserVersion,b.finished_at AS importedAt,
@@ -83,10 +92,65 @@ class DesktopData {
         FROM source_file s LEFT JOIN import_batch b ON b.id=s.current_batch_id AND b.source_file_id=s.id AND b.status='done'
         LEFT JOIN format_rule rule ON rule.id=s.format_rule_id
         LEFT JOIN import_batch latest ON latest.id=(SELECT max(id) FROM import_batch WHERE source_file_id=s.id)
-        WHERE s.case_id=1 ORDER BY s.id`).safeIntegers().all().map(row => ({ ...wire(row), canRetry: row.canRetry === 1n,
-          canReimport: row.canReimport === 1n }));
+        WHERE s.case_id=1 AND s.removed_at IS ${removed ? 'NOT NULL' : 'NULL'}
+        ORDER BY ${removed ? 's.removed_at DESC, ' : ''}s.id`).safeIntegers().all().map(row => ({
+          ...wire(row), canRetry: !removed && row.canRetry === 1n, canReimport: !removed && row.canReimport === 1n
+        }));
       return { caseId, dataVersion: state.data_version.toString(), materials };
     });
+  }
+  removeMaterial(caseId, sourceFileId) {
+    return this._setMaterialRemoval(caseId, sourceFileId, true);
+  }
+  restoreMaterial(caseId, sourceFileId) {
+    return this._setMaterialRemoval(caseId, sourceFileId, false);
+  }
+  _setMaterialRemoval(caseId, sourceFileId, removed) {
+    const { db, record } = this.context(caseId);
+    if (typeof sourceFileId !== 'string' || !/^[1-9]\d{0,18}$/.test(sourceFileId)) {
+      fail('FS_MATERIAL_INPUT', '请选择当前案件的一份材料。');
+    }
+    const id = Number(sourceFileId);
+    if (!Number.isSafeInteger(id)) fail('FS_MATERIAL_INPUT', '材料编号超出范围，请重新选择。');
+    const preflight = () => {
+      const source = db.prepare('SELECT removed_at FROM source_file WHERE id=? AND case_id=1').get(id);
+      if (!source) fail('FS_MATERIAL_NOT_FOUND', '未找到该材料，请刷新列表。');
+      if (removed === (source.removed_at !== null)) return false;
+      if (db.prepare("SELECT 1 FROM import_batch WHERE source_file_id=? AND status IN ('pending','parsing','importing')").get(id)) {
+        fail('FS_MATERIAL_BUSY', '该材料仍在处理，请等待处理结果后再操作。');
+      }
+    };
+    runCaseTransaction(db, record, { sourceFileIds: [id] }, () => {
+      db.prepare('UPDATE source_file SET removed_at=? WHERE id=? AND case_id=1').run(removed ? new Date().toISOString() : null, id);
+    }, { preflight });
+    return { materials: this.listMaterials(caseId), removedMaterials: this.listRemovedMaterials(caseId), case: this.store._dto(record, db) };
+  }
+  async setRecycleMaterials(caseId, fileIds, restore) {
+    if (!Array.isArray(fileIds) || !fileIds.length || fileIds.length > 10000 ||
+        new Set(fileIds).size !== fileIds.length || fileIds.some(id => typeof id !== 'string' || !/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id)))) {
+      fail('FS_MATERIAL_INPUT', '请重新选择要处理的材料。');
+    }
+    const record = this.store._caseRecord(caseId);
+    const db = caseId === this.store.currentCaseId && this.store.caseDb
+      ? this.store.caseDb : await this.store._openCaseDatabase(record);
+    const ids = fileIds.map(Number);
+    try {
+      runCaseTransaction(db, record, { sourceFileIds: ids }, () => {
+        const get = db.prepare('SELECT removed_at FROM source_file WHERE id=? AND case_id=1');
+        const pending = db.prepare("SELECT 1 FROM import_batch WHERE source_file_id=? AND status IN ('pending','parsing','importing')");
+        const set = db.prepare('UPDATE source_file SET removed_at=? WHERE id=? AND case_id=1');
+        const now = new Date().toISOString();
+        for (const id of ids) {
+          const row = get.get(id);
+          if (!row || (row.removed_at !== null) !== Boolean(restore)) fail('FS_TRASH_STALE', '材料状态已变化，请刷新后重新选择。');
+          if (pending.get(id)) fail('FS_MATERIAL_BUSY', '该材料仍在处理，请等待处理结果后再操作。');
+          set.run(restore ? null : now, id);
+        }
+      });
+      return { case: this.store._dto(record, db), materials: caseId === this.store.currentCaseId ? this.listMaterials(caseId) : null };
+    } finally {
+      if (db !== this.store.caseDb) db.close();
+    }
   }
   queryFlows(caseId, options = {}) {
     const {db} = this.context(caseId);
@@ -113,7 +177,7 @@ class DesktopData {
     const { db, record } = this.context(caseId);
     return listMaterialReviewHistory(db, record, sourceFileId);
   }
-  async importFile(caseId, input) {
+  async importFileReceipt(caseId, input, expectedSourceIdentity = null) {
     const context = this.context(caseId);
     const formatKey = input?.formatKey ?? 'alipay-account-17col-v1';
     if (!keys(input, ['filePath','formatKey','confirmedCny','confirmedAt']) || !Object.hasOwn(FORMATS,formatKey) || typeof input.filePath !== 'string' ||
@@ -122,9 +186,16 @@ class DesktopData {
       !Number.isFinite(Date.parse(input.confirmedAt))) {
       fail('FS_IMPORT_APPROVAL', '需要先确认本次材料的币种与技术预览范围。');
     }
-    const receipt = await importSourceFile({ ...context, filePath: input.filePath, rule: approvedRule(formatKey),
-      policy: approvedPolicy(formatKey, input.confirmedAt), onProgress: event => this.onProgress(event) });
-    return { receipt, materials: this.listMaterials(caseId), case: this.store._dto(context.record, context.db) };
+    return importSourceFile({ ...context, filePath: input.filePath, rule: approvedRule(formatKey),
+      policy: approvedPolicy(formatKey, input.confirmedAt), expectedSourceIdentity, onProgress: event => this.onProgress(event) });
+  }
+  getBatchImportState(caseId) {
+    const { record, db } = this.context(caseId);
+    return { materials: this.listMaterials(caseId), case: this.store._dto(record, db) };
+  }
+  async importFile(caseId, input) {
+    const receipt = await this.importFileReceipt(caseId, input);
+    return { receipt, ...this.getBatchImportState(caseId) };
   }
   async retryImport(caseId, sourceFileId) {
     const context = this.context(caseId);
@@ -149,9 +220,9 @@ class DesktopData {
     const { getWorkpaperContext } = require('./workpaper.cjs');
     return getWorkpaperContext(this.context(caseId));
   }
-  exportWorkpaper(caseId, filePath, expectedDataVersion) {
+  exportWorkpaper(caseId, filePath, expectedDataVersion, highlightRepairs = true) {
     const { exportWorkpaper } = require('./workpaper.cjs');
-    return exportWorkpaper({ ...this.context(caseId), filePath, expectedDataVersion, onProgress: event => this.onProgress(event) });
+    return exportWorkpaper({ ...this.context(caseId), filePath, expectedDataVersion, highlightRepairs, onProgress: event => this.onProgress(event) });
   }
   async readFlowSource(caseId, input) {
     const context = this.context(caseId);
@@ -163,10 +234,8 @@ class DesktopData {
       const state = context.db.prepare('SELECT case_uuid,data_version FROM case_data_state WHERE id=1').safeIntegers().get();
       if (state?.case_uuid !== caseId) fail('FS_CASE_IDENTITY', '案件身份与数据库不符。');
       if (state.data_version.toString() !== input.dataVersion) fail('FS_QUERY_STALE', '数据已更新，请刷新列表后查看原文。');
-      const row = context.db.prepare(`SELECT f.*,s.file_name AS source_file_name,b.parser_version FROM fund_flow f
-        JOIN source_file s ON s.id=f.source_file_id AND s.case_id=f.case_id
-        JOIN import_batch b ON b.id=s.current_batch_id AND b.id=f.batch_id AND b.source_file_id=s.id AND b.status='done'
-        WHERE f.id=? AND f.case_id=1`).safeIntegers().get(flowId);
+      const row = context.db.prepare(`SELECT f.*,s.file_name AS source_file_name,b.parser_version
+        ${effectiveFlowFrom(context.db)} AND f.id=?`).safeIntegers().get(flowId);
       if (!row) fail('FS_IMPORT_SOURCE', '此流水不属于当前已发布批次，请刷新列表。');
       const baseline = context.db.prepare(`SELECT before_amount AS amount,before_direction AS direction,before_status AS status
         FROM review_event WHERE fund_flow_id=? AND action='resolve' ORDER BY id LIMIT 1`).safeIntegers().get(flowId);
@@ -179,7 +248,11 @@ class DesktopData {
     // Hashing yields; recheck version/current membership before showing evidence.
     this.context(caseId);
     const standard = readCurrent();
-    return { ...source, caseId, dataVersion: input.dataVersion, standard };
+    const entries = source.fieldEntries ?? Object.entries(source.fields ?? {}).map(([header, value], index) => ({
+      column: index + 1, header, value
+    }));
+    return { ...source, caseId, dataVersion: input.dataVersion, standard,
+      fieldEntries: entries.map(entry => ({ ...entry, repair: repairText(entry.value) })) };
   }
 }
 

@@ -3,7 +3,11 @@
 // A cursor is a query context, not an authorization token. The worker must own
 // the case connection; every page checks its identity and committed version.
 const { createHash } = require('node:crypto');
-const { withCaseReadSnapshot } = require('./hardening.cjs');
+const { ledgerFields } = require('./ledger-fields.cjs');
+const { repairFields } = require('./text-repair.cjs');
+const { supportsRefund, REFUND_REASON } = require('./manual-review.cjs');
+const { rawValuesHash } = require('./review-schema.cjs');
+const { effectiveFlowFrom, withCaseReadSnapshot } = require('./hardening.cjs');
 const SORT = 'time-null-last/time/source/coordinate/id:v1';
 
 function fail(code, message) { throw Object.assign(new Error(message), { code }); }
@@ -56,21 +60,23 @@ function queryFlowPage(db, { caseId, filters: input, limit = 50, cursor = null }
       fail('FS_QUERY_CONTEXT', '案件或筛选条件已变化，请从第一页重新查询。');
     }
     if (token && token.dataVersion !== version) fail('FS_QUERY_STALE', '数据已更新，请刷新列表后继续查看。');
-    const params = [], conditions = ['f.case_id=1'];
-    if (filters.sourceFileId !== null) { conditions.push('f.source_file_id=?'); params.push(filters.sourceFileId); }
-    if (filters.status !== null) { conditions.push('f.status=?'); params.push(filters.status); }
-    const from = `FROM fund_flow f
-      JOIN source_file s ON s.id=f.source_file_id AND s.case_id=f.case_id
-      JOIN import_batch b ON b.id=s.current_batch_id AND b.id=f.batch_id
-        AND b.source_file_id=s.id AND b.case_id=f.case_id AND b.status='done'
-      WHERE ${conditions.join(' AND ')}`;
+    const params = [];
+    let from = effectiveFlowFrom(db);
+    if (filters.sourceFileId !== null) { from += ' AND f.source_file_id=?'; params.push(filters.sourceFileId); }
+    if (filters.status !== null) { from += ' AND f.status=?'; params.push(filters.status); }
     const total = db.prepare(`SELECT count(*) n ${from}`).safeIntegers().get(...params).n.toString();
     let after = '';
     if (token) {
       after = " AND ((f.txn_time IS NULL),coalesce(f.txn_time,''),f.source_file_id,f.source_loc COLLATE BINARY,f.id) > (?,?,?,?,?)";
       params.push(token.last[0], token.last[1], BigInt(token.last[2]), token.last[3], BigInt(token.last[4]));
     }
+    const hasReview = db.pragma('user_version', { simple: true }) >= 4;
+    const reviewHistory = hasReview
+      ? `EXISTS (SELECT 1 FROM review_event e WHERE e.source_file_id=f.source_file_id AND e.source_loc=f.source_loc
+          AND e.raw_sha256=(${rawValuesHash('f')}))` : '0';
     const rows = db.prepare(`SELECT f.*,s.file_name AS source_file_name,s.file_sha256 AS source_sha256,
+      (SELECT format_key FROM format_rule WHERE id=f.format_rule_id) AS format_key,
+      ${reviewHistory} AS has_review_history,
       b.parser_version ${from}${after}
       ORDER BY (f.txn_time IS NULL),f.txn_time,f.source_file_id,f.source_loc COLLATE BINARY,f.id LIMIT ?`)
       .safeIntegers().all(...params, limit + 1);
@@ -83,8 +89,24 @@ function queryFlowPage(db, { caseId, filters: input, limit = 50, cursor = null }
     const reasons = db.prepare(`SELECT reason_code,detail FROM pending_reason
       WHERE fund_flow_id=? AND resolved_at IS NULL ORDER BY reason_code`);
     return { caseId, dataVersion: version, filters, sort: SORT, total,
-      rows: rows.map(row => ({ ...Object.fromEntries(Object.entries(row).map(([k,v]) => [k,typeof v === 'bigint' ? v.toString() : v])),
-        pendingReasons: reasons.all(row.id) })), nextCursor };
+      rows: rows.map(row => {
+        const pendingReasons = reasons.all(row.id);
+        const raw = row.raw_record ? JSON.parse(row.raw_record) : null;
+        const { has_review_history, ...values } = row;
+        const ledger = ledgerFields(row, raw);
+        return {
+          ...Object.fromEntries(Object.entries(values).map(([key,value]) => [key,typeof value === 'bigint' ? value.toString() : value])),
+          ledger,
+          repairs: repairFields({ ...ledger, time: raw ? row.txn_time_text : null, direction: row.raw_direction,
+            amount: row.raw_amount_text, type: row.txn_type }),
+          review: {
+            canNote: hasReview && row.status === 'pending',
+            canResolve: hasReview && pendingReasons.some(reason => reason.reason_code === REFUND_REASON) && supportsRefund(row, raw),
+            hasHistory: Boolean(has_review_history)
+          },
+          pendingReasons
+        };
+      }), nextCursor };
   });
 }
 

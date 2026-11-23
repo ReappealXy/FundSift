@@ -72,10 +72,14 @@ class ArchiveStore {
       try { fs.renameSync(temporary, target); } catch (error) { fs.rmSync(temporary, { force: true }); throw error; }
     }
   }
-  async stage(source, { expectedSha256 = null, signal, onProgress = () => {} } = {}) {
+  async stage(source, { expectedSha256 = null, expectedSourceIdentity = null, signal, onProgress = () => {} } = {}) {
     if (expectedSha256 !== null && !SHA.test(expectedSha256)) throw fail('FS_ARCHIVE_INPUT', '预期文件哈希无效。');
     const original = path.resolve(source), stat = fs.lstatSync(original, { bigint: true });
     if (!stat.isFile() || stat.isSymbolicLink()) throw fail('FS_ARCHIVE_SOURCE', '请选择普通原始文件。');
+    if (expectedSourceIdentity !== null && (sourceIdentity(stat) !== expectedSourceIdentity ||
+        path.relative(original, await fsp.realpath(original)) !== '')) {
+      throw fail('FS_IMPORT_BATCH_CHANGED', '原件自生成清单后已经变化，请重新选择这份材料。');
+    }
     const taskId = randomUUID();
     this.active.add(taskId);
     let record;
@@ -130,6 +134,7 @@ class ArchiveStore {
         record.state = 'failed'; record.errorCode = error.name === 'AbortError' ? 'FS_USER_CANCELLED' : error.code || 'FS_ARCHIVE_FAILED';
         try { this._journal(record); } catch (_) { /* Prior durable journal remains for recovery. */ }
       }
+      if (error.code === 'ENOSPC') throw fail('FS_ARCHIVE_SPACE', '数据存放位置的磁盘空间不足。');
       throw error.code?.startsWith('FS_') ? error : fail(error.name === 'AbortError' ? 'FS_USER_CANCELLED' : 'FS_ARCHIVE_FAILED',
         error.name === 'AbortError' ? '已取消归档，未发布导入结果。' : '归档未完成，请检查原件、权限和剩余空间。');
     } finally { this.active.delete(taskId); }

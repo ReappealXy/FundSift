@@ -85,7 +85,7 @@ test('微信同单号只在完整本方身份一致时关联，金额不一致�
 test('关系扫描按原文字节截取并关闭迭代器，不一次加载全部原文或向界面输出大字段',()=>{
   const raw=JSON.stringify({format_key:WX,source_loc:'2',values:Array(27).fill(''),padding:'x'.repeat(1024*1024)});
   let pulled=0,closed=false;
-  const db={inTransaction:true,prepare(sql){
+  const db={inTransaction:true,pragma(){return 5;},prepare(sql){
     if(sql.includes('case_data_state'))return {safeIntegers(){return this;},get(){return {case_uuid:'case',data_version:1n};}};
     return {safeIntegers(){return this;},all(){assert.fail('must stream records');},
       *iterate(){try{for(let i=0;i<100;i++){pulled++;yield {id:BigInt(i+1),source_loc:'2',raw_record:raw,amount:null,txn_time:null};}}finally{closed=true;}}};
